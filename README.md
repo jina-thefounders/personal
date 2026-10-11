@@ -1,4 +1,4 @@
-# My Board
+# Task Cubes
 
 개인 일정·업무·할 일 대시보드 (`index.html` 단일 파일).
 

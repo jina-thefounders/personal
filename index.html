@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="app-version" content="2026-10-11.5">
 <title>Task Cubes</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
@@ -293,7 +294,7 @@ textarea.input{resize:vertical;min-height:80px}
     <p class="hint">
       ① Google Cloud Console에서 Calendar API를 사용 설정하고 <b>웹 애플리케이션</b> OAuth 클라이언트를 만드세요.<br>
       ② 승인된 JavaScript 원본에 이 페이지 주소(예: <code id="originHint"></code>)를 추가하세요.<br>
-      ③ 캘린더 동기화 범위: 지난 7일 ~ 향후 90일. 액세스 토큰은 저장하지 않으며 새로고침 시 다시 연결합니다.<br>④ 클라우드 저장은 <code>drive.appdata</code> 권한만 사용하며, 이 앱이 만든 파일 외에는 Drive에 접근하지 않습니다.
+      ③ 캘린더 동기화 범위: 지난 7일 ~ 향후 90일. 로그인은 새로고침해도 유지되며, Google 정책상 약 1시간마다 「연결」을 한 번 눌러 갱신합니다.<br>④ 클라우드 저장은 <code>drive.appdata</code> 권한만 사용하며, 이 앱이 만든 파일 외에는 Drive에 접근하지 않습니다.
     </p>
     <div class="modal-foot">
       <button class="btn" id="gDisconnect">연결 해제</button>
@@ -793,8 +794,21 @@ function toast(msg, action, label, sticky){
 
 /* ================= Google Calendar ================= */
 // Client ID is entered by the user at runtime (it is a public identifier, not a secret).
-// The access token is kept in memory only and never written to storage.
-const G = { token:null, expires:0, client:null, loading:null };
+// The short-lived access token (about 1 hour, limited to the two scopes below) is kept in this
+// browser until it expires so a page reload doesn't sign you out; it is removed on disconnect.
+const G = { token:null, expires:0, client:null, loading:null, expTimer:null };
+const TOKEN_KEY = 'taskcubes.gtoken';
+function setToken(token, expires){
+  G.token = token; G.expires = expires;
+  try{ token ? localStorage.setItem(TOKEN_KEY, JSON.stringify({ t:token, exp:expires })) : localStorage.removeItem(TOKEN_KEY); }catch(e){}
+  clearTimeout(G.expTimer);
+  if(token) G.expTimer = setTimeout(() => { updateGcalUi(); promptConnect(); }, Math.max(0, expires - Date.now()) + 500);
+}
+try{
+  const saved = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
+  if(saved && saved.exp > Date.now() + 60e3){ G.token = saved.t; G.expires = saved.exp; }
+  else localStorage.removeItem(TOKEN_KEY);
+}catch(e){}
 const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata';
 const API = 'https://www.googleapis.com/calendar/v3';
 const connected = () => G.token && Date.now() < G.expires;
@@ -803,7 +817,7 @@ function updateGcalUi(){
   const on = connected();
   $('#gcalDot').classList.toggle('on', on);
   $('#gcalDot2').classList.toggle('on', on);
-  $('#gcalStatus').textContent = on ? '연결됨 · 세션 동안 유지' : (S.gcal.clientId ? '연결 필요' : '클라이언트 ID를 입력하세요');
+  $('#gcalStatus').textContent = on ? '연결됨 · ' + Math.max(1, Math.round((G.expires - Date.now()) / 60e3)) + '분 후 재연결 필요' : (S.gcal.clientId ? '연결 필요' : '클라이언트 ID를 입력하세요');
   const cs = $('#cloudStat');
   if(!S.cloud) cs.textContent = '';
   else if(!on) cs.textContent = '· ☁ 연결 필요';
@@ -845,7 +859,7 @@ $('#gCopyLink').addEventListener('click', async () => {
 });
 $('#gDisconnect').addEventListener('click', () => {
   if(G.token && window.google && google.accounts) google.accounts.oauth2.revoke(G.token, () => {});
-  G.token = null; G.expires = 0; updateGcalUi(); toast('구글 캘린더 연결 해제됨');
+  setToken(null, 0); updateGcalUi(); toast('Google 연결 해제됨');
 });
 $('#syncBtn').addEventListener('click', async () => {
   if(!S.gcal.clientId){ $('#gcalBtn').click(); return; }
@@ -873,7 +887,7 @@ async function ensureToken(interactive){
       client_id:S.gcal.clientId, scope:SCOPE,
       callback: r => {
         if(r.error) return rej(new Error('인증 실패: ' + r.error));
-        G.token = r.access_token; G.expires = Date.now() + (r.expires_in - 60) * 1000;
+        setToken(r.access_token, Date.now() + (r.expires_in - 60) * 1000);
         updateGcalUi(); res();
       },
       error_callback: e => rej(new Error('인증 창이 닫혔습니다' + (e && e.type ? ' (' + e.type + ')' : '')))
@@ -886,7 +900,7 @@ async function gfetch(url, opts = {}){
   const r = await fetch(url, Object.assign({}, opts, {
     headers: Object.assign({ Authorization:'Bearer ' + G.token, 'Content-Type':'application/json' }, opts.headers || {})
   }));
-  if(r.status === 401){ G.token = null; updateGcalUi(); throw new Error('구글 인증이 만료되었습니다. 다시 연결하세요.'); }
+  if(r.status === 401){ setToken(null, 0); updateGcalUi(); throw new Error('구글 인증이 만료되었습니다. 다시 연결하세요.'); }
   if(!r.ok){ throw new Error('Google API 오류 ' + r.status + ': ' + (await r.text()).slice(0,200)); }
   return r.status === 204 ? null : r.json();
 }
@@ -1082,7 +1096,28 @@ new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if(S.view =
 // refresh D-day labels every minute
 setInterval(() => { if(S.view === 'active' && !document.querySelector('.overlay.open')) render(); }, 60e3);
 render();
-promptConnect();
+if(G.token){ setToken(G.token, G.expires); if(S.cloud) cloudSync(); }   // restored session: arm expiry, pull changes
+else promptConnect();
+
+// GitHub Pages lets browsers cache the page for ~10 minutes; check for a newer version and load it once.
+const APP_VERSION = document.querySelector('meta[name=app-version]').content;
+async function checkVersion(onLoad){
+  if(location.protocol === 'file:') return;
+  try{
+    const r = await fetch(location.pathname, { cache:'reload' });   // also refreshes the browser cache
+    const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+    const m = doc.querySelector('meta[name=app-version]');
+    const live = m && m.content;
+    if(!live || live === APP_VERSION) return;
+    let tried = null; try{ tried = sessionStorage.getItem('taskcubes.reloadedFor'); }catch(e){}
+    if(onLoad && tried !== live && !document.querySelector('.overlay.open')){
+      try{ sessionStorage.setItem('taskcubes.reloadedFor', live); }catch(e){}
+      location.reload();
+    } else toast('새 버전이 있어요', () => location.reload(), '새로고침', true);
+  }catch(e){}
+}
+checkVersion(true);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) checkVersion(false); });
 })();
 </script>
 </body>

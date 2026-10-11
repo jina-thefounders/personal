@@ -191,6 +191,9 @@ textarea.input{resize:vertical;min-height:80px}
       <h2>할 일<span class="en">Task</span></h2>
       <span class="count" data-count="task">0</span>
       <div class="spacer"></div>
+      <label class="toggle" id="taskSortToggleWrap" title="마감일이 빠른 순으로 자동 정렬 (마감일 없는 할 일은 뒤로)">
+        <input type="checkbox" id="taskSortToggle"><span class="track"></span>마감일순 정렬
+      </label>
       <button class="addbtn" data-add="task" title="할 일 추가">+</button>
     </div>
     <div class="grid-wrap"><div class="grid" data-grid="task"></div></div>
@@ -322,7 +325,8 @@ const defaults = () => ({
   version:1,
   space:'work', view:'active', cell:124,
   theme:{ work:{c1:'#6a5af9', c2:'#4fc3f7', seed:1}, private:{c1:'#f6d365', c2:'#fda085', seed:1} },
-  autoSort:{ work:true, private:true },
+  autoSort:{ work:true, private:true },     // schedules: chronological
+  taskSort:{ work:false, private:false },   // tasks: by deadline
   gcal:{ clientId:'', calendars:{work:'primary', private:'primary'}, push:true, ignored:[] },
   cloud:false,          // per-device: save to Google Drive appDataFolder
   settingsAt:0,         // last change of synced settings (theme, sort, size, calendars)
@@ -345,7 +349,7 @@ function save(){ stamp(); saveLocal(); scheduleCloud(); }
 // so devices can merge per item instead of overwriting each other.
 let snap = new Map(), settingsSnap = '';
 const itemSig = it => { const { updatedAt, ...rest } = it; return JSON.stringify(rest); };
-const settingsSig = () => JSON.stringify([S.theme, S.autoSort, S.cell, S.gcal.calendars, S.gcal.push]);
+const settingsSig = () => JSON.stringify([S.theme, S.autoSort, S.taskSort, S.cell, S.gcal.calendars, S.gcal.push]);
 function rebuildSnap(){
   snap = new Map(S.items.map(it => [it.id, itemSig(it)]));
   settingsSnap = settingsSig();
@@ -438,12 +442,17 @@ function firstFreeSlot(space, kind){
   const used = new Set(active(space, kind).map(i => i.slot));
   let s = 0; while(used.has(s)) s++; return s;
 }
-function sortKey(it){ const d = itemDate(it); return d ? d.getTime() : Infinity; }
+// date-only deadlines: a task is due by the end of that day, an all-day event starts the day
+function sortKey(it){
+  const d = itemDate(it); if(!d) return Infinity;
+  return (it.kind === 'task' && !it.time) ? d.getTime() + 864e5 - 1 : d.getTime();
+}
+const isSorted = (space, kind) => !!(kind === 'event' ? S.autoSort : S.taskSort)[space];
 function layout(space, kind){
   // returns array where index = displayed position, value = item or undefined
   const list = active(space, kind);
   const out = [];
-  if(kind === 'event' && S.autoSort[space]){
+  if(isSorted(space, kind)){
     list.slice().sort((a,b) => sortKey(a) - sortKey(b) || a.createdAt - b.createdAt).forEach((it,i) => out[i] = it);
   } else {
     list.forEach(it => out[it.slot] = it);
@@ -475,6 +484,8 @@ function render(){
   $('#sortToggle').checked = !!S.autoSort[S.space];
   const isActive = S.view === 'active';
   $('#sortToggleWrap').style.display = isActive ? '' : 'none';
+  $('#taskSortToggle').checked = !!S.taskSort[S.space];
+  $('#taskSortToggleWrap').style.display = isActive ? '' : 'none';
   $$('[data-add]').forEach(b => b.style.display = isActive ? '' : 'none');
   for(const kind of ['task','event']){
     $(`[data-count=${kind}]`).textContent = isActive ? active(S.space, kind).length
@@ -497,13 +508,13 @@ function renderGrid(kind){
   for(let i=0;i<n;i++){
     const it = cells[i];
     const slot = it ? it.slot : i;
-    const bg = cellColor(S.space, kind, (kind === 'event' && S.autoSort[S.space]) ? i : slot);
+    const bg = cellColor(S.space, kind, isSorted(S.space, kind) ? i : slot);
     const c = el('div', { class:'cell ' + (it ? 'filled' : 'empty'), 'data-pos':i });
     c.style.setProperty('--c', bg);
     c.style.setProperty('--fg', fgFor(bg));
     if(it){
       c.dataset.id = it.id;
-      c.draggable = !(kind === 'event' && S.autoSort[S.space]);
+      c.draggable = !isSorted(S.space, kind);
       c.append(el('div', { class:'t' }, it.title));
       const chk = el('button', { class:'check', title:'완료', 'aria-label':'완료 처리' });
       chk.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 6.5l2.5 2.5L10 3.5"/></svg>';
@@ -675,7 +686,7 @@ function openEditor({ id, kind, pos }){
   editing = { id: it ? it.id : null, kind, pos };
   $('#editTitle').textContent = (it ? KINDS[kind] + ' 수정' : '새 ' + KINDS[kind]) + ' · ' + SPACES[S.space];
   $('#editSub').textContent = it ? (it.gcalId ? '구글 캘린더와 연결된 항목입니다' : '생성 ' + fmtStamp(it.createdAt))
-    : (pos != null && !(kind === 'event' && S.autoSort[S.space]) ? '더블클릭한 칸에 추가됩니다' : '빈 칸에 추가됩니다');
+    : (pos != null && !isSorted(S.space, kind) ? '더블클릭한 칸에 추가됩니다' : '빈 칸에 추가됩니다');
   $('#fTitle').value = it ? it.title : '';
   $('#fDesc').value = it ? it.desc || '' : '';
   $('#fDate').value = it ? it.date || '' : '';
@@ -699,7 +710,7 @@ $('#editForm').addEventListener('submit', e => {
     Object.assign(it, data);
   } else {
     const k = editing.kind;
-    const manual = !(k === 'event' && S.autoSort[S.space]);
+    const manual = !isSorted(S.space, k);
     const taken = editing.pos != null && active(S.space, k).some(i => i.slot === editing.pos);
     const slot = (manual && editing.pos != null && !taken) ? editing.pos : firstFreeSlot(S.space, k);
     it = Object.assign({ id:uid(), space:S.space, kind:k, slot, done:false, createdAt:Date.now() }, data);
@@ -726,6 +737,7 @@ document.addEventListener('keydown', e => {
 $('#spaceTabs').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; S.space = b.dataset.space; save(); render(); });
 $('#viewTabs').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; S.view = b.dataset.view; save(); render(); });
 $('#sortToggle').addEventListener('change', e => { S.autoSort[S.space] = e.target.checked; save(); render(); });
+$('#taskSortToggle').addEventListener('change', e => { S.taskSort[S.space] = e.target.checked; save(); render(); });
 
 /* ---------- theme ---------- */
 function refreshThemeModal(){
@@ -968,7 +980,7 @@ const CLOUD_FILE = 'myboard.json';
 let cloudFileId = null, cloudQueue = Promise.resolve(), cloudTimer = null, cloudLast = 0, cloudState = '';
 
 function payload(){
-  return { version:1, items:S.items, deleted:S.deleted, settingsAt:S.settingsAt, theme:S.theme, autoSort:S.autoSort, cell:S.cell,
+  return { version:1, items:S.items, deleted:S.deleted, settingsAt:S.settingsAt, theme:S.theme, autoSort:S.autoSort, taskSort:S.taskSort, cell:S.cell,
     gcal:{ calendars:S.gcal.calendars, push:S.gcal.push, ignored:S.gcal.ignored } };
 }
 function normalizeSlots(){
@@ -995,6 +1007,7 @@ function mergeRemote(R){
   if((R.settingsAt || 0) > (S.settingsAt || 0)){
     if(R.theme) S.theme = R.theme;
     if(R.autoSort) S.autoSort = R.autoSort;
+    if(R.taskSort) S.taskSort = R.taskSort;
     if(R.cell) S.cell = R.cell;
     if(R.gcal){ if(R.gcal.calendars) S.gcal.calendars = R.gcal.calendars; S.gcal.push = !!R.gcal.push; }
     S.settingsAt = R.settingsAt;

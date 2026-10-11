@@ -45,6 +45,8 @@ header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:
 .swatch{width:28px;height:16px;border-radius:4px;display:inline-block}
 .gdot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .gdot.on{background:var(--ok)}
+.cloudstat{font-size:11px;color:var(--muted);font-weight:400}
+.cloudstat:empty{display:none}
 
 /* ---------- main ---------- */
 main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
@@ -163,7 +165,7 @@ textarea.input{resize:vertical;min-height:80px}
   </div>
   <div class="spacer"></div>
   <button class="iconbtn" id="themeBtn" title="색상 테마"><span class="swatch" id="themeSwatch"></span>색상</button>
-  <button class="iconbtn" id="gcalBtn" title="구글 캘린더"><span class="gdot" id="gcalDot"></span>Google 캘린더</button>
+  <button class="iconbtn" id="gcalBtn" title="Google 연결 · 캘린더 · 클라우드 저장"><span class="gdot" id="gcalDot"></span>Google<span class="cloudstat" id="cloudStat"></span></button>
   <button class="iconbtn" id="moreBtn" aria-label="더보기">⋯</button>
   <div class="menu" id="moreMenu">
     <button id="exportBtn">데이터 내보내기 (JSON)</button>
@@ -256,7 +258,7 @@ textarea.input{resize:vertical;min-height:80px}
 <!-- google calendar -->
 <div class="overlay" id="gcalOverlay">
   <div class="modal">
-    <h3><span class="gdot" id="gcalDot2"></span>구글 캘린더 동기화</h3>
+    <h3><span class="gdot" id="gcalDot2"></span>Google 연결</h3>
     <div class="sub" id="gcalStatus">연결되지 않음</div>
     <div class="field">
       <label for="gClientId">OAuth 클라이언트 ID</label>
@@ -267,11 +269,17 @@ textarea.input{resize:vertical;min-height:80px}
       <div class="row" style="margin-bottom:6px"><span class="hint" style="width:64px">업무</span><input class="input" id="gCalWork" placeholder="primary"></div>
       <div class="row"><span class="hint" style="width:64px">프라이빗</span><input class="input" id="gCalPrivate" placeholder="primary"></div>
     </div>
-    <label class="check-inline" style="margin-bottom:12px"><input type="checkbox" id="gPush"> 대시보드에서 만든 행사를 구글 캘린더에도 등록</label>
+    <label class="check-inline" style="margin-bottom:8px"><input type="checkbox" id="gPush"> 대시보드에서 만든 행사를 구글 캘린더에도 등록</label>
+    <div class="section-title" style="margin-top:6px">☁ 기기 간 동기화</div>
+    <label class="check-inline" style="margin-bottom:8px"><input type="checkbox" id="gCloud"> 할 일·행사·테마를 내 Google Drive(앱 전용 숨김 폴더)에 저장</label>
+    <div class="row" style="margin-bottom:12px">
+      <span class="hint" style="flex:1">다른 기기에서는 아래 링크로 처음 한 번 열면 설정이 적용됩니다.</span>
+      <button type="button" class="smallbtn" id="gCopyLink">기기 연결 링크 복사</button>
+    </div>
     <p class="hint">
       ① Google Cloud Console에서 Calendar API를 사용 설정하고 <b>웹 애플리케이션</b> OAuth 클라이언트를 만드세요.<br>
       ② 승인된 JavaScript 원본에 이 페이지 주소(예: <code id="originHint"></code>)를 추가하세요.<br>
-      ③ 동기화 범위: 지난 7일 ~ 향후 90일. 액세스 토큰은 저장하지 않으며 새로고침 시 다시 연결합니다.
+      ③ 캘린더 동기화 범위: 지난 7일 ~ 향후 90일. 액세스 토큰은 저장하지 않으며 새로고침 시 다시 연결합니다.<br>④ 클라우드 저장은 <code>drive.appdata</code> 권한만 사용하며, 이 앱이 만든 파일 외에는 Drive에 접근하지 않습니다.
     </p>
     <div class="modal-foot">
       <button class="btn" id="gDisconnect">연결 해제</button>
@@ -304,6 +312,9 @@ const defaults = () => ({
   theme:{ work:{c1:'#6a5af9', c2:'#4fc3f7', seed:1}, private:{c1:'#f6d365', c2:'#fda085', seed:1} },
   autoSort:{ work:true, private:true },
   gcal:{ clientId:'', calendars:{work:'primary', private:'primary'}, push:true, ignored:[] },
+  cloud:false,          // per-device: save to Google Drive appDataFolder
+  settingsAt:0,         // last change of synced settings (theme, sort, size, calendars)
+  deleted:{},           // tombstones {id: ts} so deletions propagate across devices
   items:[]
 });
 
@@ -315,7 +326,30 @@ function load(){
   }catch(e){}
   return defaults();
 }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+function saveLocal(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+function save(){ stamp(); saveLocal(); scheduleCloud(); }
+
+// Change tracking: compare each item to its last-saved snapshot and stamp updatedAt,
+// so devices can merge per item instead of overwriting each other.
+let snap = new Map(), settingsSnap = '';
+const itemSig = it => { const { updatedAt, ...rest } = it; return JSON.stringify(rest); };
+const settingsSig = () => JSON.stringify([S.theme, S.autoSort, S.cell, S.gcal.calendars, S.gcal.push]);
+function rebuildSnap(){
+  snap = new Map(S.items.map(it => [it.id, itemSig(it)]));
+  settingsSnap = settingsSig();
+}
+function stamp(){
+  const now = Date.now(), ids = new Set();
+  for(const it of S.items){
+    ids.add(it.id);
+    const sig = itemSig(it);
+    if(snap.get(it.id) !== sig){ it.updatedAt = now; snap.set(it.id, sig); }
+  }
+  for(const id of [...snap.keys()]) if(!ids.has(id)){ S.deleted[id] = now; snap.delete(id); }
+  const ss = settingsSig();
+  if(ss !== settingsSnap){ S.settingsAt = now; settingsSnap = ss; }
+}
+rebuildSnap();
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
 const $ = s => document.querySelector(s);
@@ -667,21 +701,22 @@ $('#importFile').addEventListener('change', async e => {
 
 /* ---------- toast ---------- */
 let toastTimer;
-function toast(msg, undo){
+function toast(msg, action, label, sticky){
   $('#toastMsg').textContent = msg;
   const btn = $('#toastAction');
-  btn.hidden = !undo;
-  btn.onclick = () => { undo && undo(); $('#toast').classList.remove('show'); };
+  btn.hidden = !action;
+  btn.textContent = label || '되돌리기';
+  btn.onclick = () => { $('#toast').classList.remove('show'); action && action(); };
   $('#toast').classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 4500);
+  if(!sticky) toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 4500);
 }
 
 /* ================= Google Calendar ================= */
 // Client ID is entered by the user at runtime (it is a public identifier, not a secret).
 // The access token is kept in memory only and never written to storage.
 const G = { token:null, expires:0, client:null, loading:null };
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata';
 const API = 'https://www.googleapis.com/calendar/v3';
 const connected = () => G.token && Date.now() < G.expires;
 
@@ -690,6 +725,13 @@ function updateGcalUi(){
   $('#gcalDot').classList.toggle('on', on);
   $('#gcalDot2').classList.toggle('on', on);
   $('#gcalStatus').textContent = on ? '연결됨 · 세션 동안 유지' : (S.gcal.clientId ? '연결 필요' : '클라이언트 ID를 입력하세요');
+  const cs = $('#cloudStat');
+  if(!S.cloud) cs.textContent = '';
+  else if(!on) cs.textContent = '· ☁ 연결 필요';
+  else if(cloudState === 'syncing') cs.textContent = '· ☁ 동기화 중…';
+  else if(cloudState === 'error') cs.textContent = '· ☁ 오류';
+  else if(cloudLast) cs.textContent = '· ☁ ' + pad(new Date(cloudLast).getHours()) + ':' + pad(new Date(cloudLast).getMinutes());
+  else cs.textContent = '· ☁';
 }
 $('#originHint').textContent = location.origin && location.origin !== 'null' ? location.origin : 'https://<your-github-pages>';
 $('#gcalBtn').addEventListener('click', () => {
@@ -697,6 +739,7 @@ $('#gcalBtn').addEventListener('click', () => {
   $('#gCalWork').value = S.gcal.calendars.work;
   $('#gCalPrivate').value = S.gcal.calendars.private;
   $('#gPush').checked = S.gcal.push;
+  $('#gCloud').checked = S.cloud;
   updateGcalUi(); openModal('#gcalOverlay');
 });
 function readGcalForm(){
@@ -704,10 +747,23 @@ function readGcalForm(){
   S.gcal.calendars.work = $('#gCalWork').value.trim() || 'primary';
   S.gcal.calendars.private = $('#gCalPrivate').value.trim() || 'primary';
   S.gcal.push = $('#gPush').checked;
-  save();
+  const cloudOn = $('#gCloud').checked && !S.cloud;
+  S.cloud = $('#gCloud').checked;
+  save(); updateGcalUi();
+  if(cloudOn && connected()) cloudSync();
 }
-['#gClientId','#gCalWork','#gCalPrivate','#gPush'].forEach(s => $(s).addEventListener('change', readGcalForm));
-$('#gConnect').addEventListener('click', async () => { readGcalForm(); try{ await ensureToken(true); closeModals(); await syncAll(); }catch(err){ alert(err.message); } });
+['#gClientId','#gCalWork','#gCalPrivate','#gPush','#gCloud'].forEach(s => $(s).addEventListener('change', readGcalForm));
+$('#gConnect').addEventListener('click', async () => {
+  readGcalForm();
+  try{ await ensureToken(true); closeModals(); if(S.cloud) await cloudSync(); await syncAll(); }catch(err){ alert(err.message); }
+});
+$('#gCopyLink').addEventListener('click', async () => {
+  readGcalForm();
+  if(!S.gcal.clientId){ alert('먼저 OAuth 클라이언트 ID를 입력하세요'); return; }
+  const link = location.origin + location.pathname + '#cid=' + encodeURIComponent(S.gcal.clientId) + (S.cloud ? '&cloud=1' : '');
+  try{ await navigator.clipboard.writeText(link); toast('링크를 복사했습니다. 다른 기기에서 열어보세요'); }
+  catch(e){ prompt('이 링크를 다른 기기에서 여세요', link); }
+});
 $('#gDisconnect').addEventListener('click', () => {
   if(G.token && window.google && google.accounts) google.accounts.oauth2.revoke(G.token, () => {});
   G.token = null; G.expires = 0; updateGcalUi(); toast('구글 캘린더 연결 해제됨');
@@ -743,11 +799,12 @@ async function ensureToken(interactive){
       },
       error_callback: e => rej(new Error('인증 창이 닫혔습니다' + (e && e.type ? ' (' + e.type + ')' : '')))
     });
-    G.client.requestAccessToken({ prompt: G.token ? '' : 'consent' });
+    G.client.requestAccessToken({ prompt:'' });
   });
 }
-async function gapi(path, opts = {}){
-  const r = await fetch(API + path, Object.assign({}, opts, {
+const gapi = (path, opts) => gfetch(API + path, opts);
+async function gfetch(url, opts = {}){
+  const r = await fetch(url, Object.assign({}, opts, {
     headers: Object.assign({ Authorization:'Bearer ' + G.token, 'Content-Type':'application/json' }, opts.headers || {})
   }));
   if(r.status === 401){ G.token = null; updateGcalUi(); throw new Error('구글 인증이 만료되었습니다. 다시 연결하세요.'); }
@@ -837,13 +894,115 @@ async function syncAll(){
   finally{ btn.disabled = false; btn.textContent = '⟳ 동기화'; }
 }
 
+/* ================= Cloud (Google Drive appDataFolder) ================= */
+const DRIVE = 'https://www.googleapis.com/drive/v3';
+const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
+const CLOUD_FILE = 'myboard.json';
+let cloudFileId = null, cloudQueue = Promise.resolve(), cloudTimer = null, cloudLast = 0, cloudState = '';
+
+function payload(){
+  return { version:1, items:S.items, deleted:S.deleted, settingsAt:S.settingsAt, theme:S.theme, autoSort:S.autoSort, cell:S.cell,
+    gcal:{ calendars:S.gcal.calendars, push:S.gcal.push, ignored:S.gcal.ignored } };
+}
+function normalizeSlots(){
+  // two devices may have put different items in the same square; keep the older one, move the newer
+  for(const space of Object.keys(SPACES)) for(const kind of Object.keys(KINDS)){
+    const used = new Set();
+    active(space, kind).sort((a,b) => (a.updatedAt||0) - (b.updatedAt||0) || (a.id < b.id ? -1 : 1)).forEach(it => {
+      if(used.has(it.slot)){ let s = 0; while(used.has(s)) s++; it.slot = s; }
+      used.add(it.slot);
+    });
+  }
+}
+function mergeRemote(R){
+  if(!R || !Array.isArray(R.items)) return;
+  const del = Object.assign({}, R.deleted || {});
+  for(const k in S.deleted) del[k] = Math.max(del[k] || 0, S.deleted[k]);
+  const cutoff = Date.now() - 90*864e5;
+  for(const k in del) if(del[k] < cutoff) delete del[k];
+  const map = new Map();
+  for(const it of R.items) map.set(it.id, it);
+  for(const it of S.items){ const c = map.get(it.id); if(!c || (it.updatedAt||0) >= (c.updatedAt||0)) map.set(it.id, it); }
+  S.items = [...map.values()].filter(it => !((del[it.id] || 0) >= (it.updatedAt || 0)));
+  S.deleted = del;
+  if((R.settingsAt || 0) > (S.settingsAt || 0)){
+    if(R.theme) S.theme = R.theme;
+    if(R.autoSort) S.autoSort = R.autoSort;
+    if(R.cell) S.cell = R.cell;
+    if(R.gcal){ if(R.gcal.calendars) S.gcal.calendars = R.gcal.calendars; S.gcal.push = !!R.gcal.push; }
+    S.settingsAt = R.settingsAt;
+  }
+  if(R.gcal && Array.isArray(R.gcal.ignored)) S.gcal.ignored = [...new Set(S.gcal.ignored.concat(R.gcal.ignored))];
+  normalizeSlots();
+}
+async function cloudFind(){
+  if(cloudFileId) return cloudFileId;
+  const q = new URLSearchParams({ spaces:'appDataFolder', q:"name='" + CLOUD_FILE + "'", fields:'files(id)' });
+  const r = await gfetch(DRIVE + '/files?' + q);
+  cloudFileId = r.files && r.files[0] ? r.files[0].id : null;
+  return cloudFileId;
+}
+async function cloudWrite(body){
+  const id = await cloudFind();
+  if(id) return gfetch(UPLOAD + '/files/' + id + '?uploadType=media', { method:'PATCH', body });
+  const b = 'mb' + uid();
+  const meta = JSON.stringify({ name:CLOUD_FILE, parents:['appDataFolder'] });
+  const multi = '--' + b + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + meta + '\r\n--' + b +
+    '\r\nContent-Type: application/json\r\n\r\n' + body + '\r\n--' + b + '--';
+  const r = await gfetch(UPLOAD + '/files?uploadType=multipart&fields=id', { method:'POST', headers:{ 'Content-Type':'multipart/related; boundary=' + b }, body:multi });
+  cloudFileId = r.id;
+}
+async function doCloudSync(){
+  if(!S.cloud || !connected()) return;
+  cloudState = 'syncing'; updateGcalUi();
+  stamp();
+  const id = await cloudFind();
+  let remoteText = '';
+  if(id){ const remote = await gfetch(DRIVE + '/files/' + id + '?alt=media'); remoteText = JSON.stringify(remote); mergeRemote(remote); }
+  rebuildSnap(); saveLocal();
+  if(!document.querySelector('.cell.dragging')) render();
+  const out = JSON.stringify(payload());
+  if(out !== remoteText) await cloudWrite(out);
+  cloudLast = Date.now(); cloudState = 'ok'; updateGcalUi();
+}
+function cloudSync(){
+  cloudQueue = cloudQueue.then(doCloudSync).catch(err => {
+    cloudState = 'error'; updateGcalUi();
+    if(!connected()) promptConnect(); else toast('클라우드 동기화 실패: ' + err.message);
+  });
+  return cloudQueue;
+}
+function scheduleCloud(){
+  if(!S.cloud || !connected()) return;
+  clearTimeout(cloudTimer);
+  cloudTimer = setTimeout(cloudSync, 1500);
+}
+function promptConnect(){
+  if(!S.cloud || !S.gcal.clientId || connected()) return;
+  toast('다른 기기의 변경사항을 불러오려면 Google에 연결하세요', async () => {
+    try{ await ensureToken(true); await cloudSync(); }catch(err){ alert(err.message); }
+  }, '연결', true);
+}
+setInterval(() => { if(S.cloud && connected() && !document.hidden) cloudSync(); }, 60e3);
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden) return;
+  if(S.cloud && connected()) cloudSync(); else promptConnect();
+});
+
 /* ================= boot ================= */
+// "기기 연결 링크": #cid=<OAuth client id>&cloud=1 sets up a new device, then is removed from the URL
+if(location.hash.length > 1){
+  const h = new URLSearchParams(location.hash.slice(1));
+  if(h.get('cid')){ S.gcal.clientId = h.get('cid'); if(h.get('cloud') === '1') S.cloud = true; saveLocal(); }
+  history.replaceState(null, '', location.pathname + location.search);
+}
 let rt;
 new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if(S.view === 'active') render(); }, 60); })
   .observe(document.querySelector('main'));
 // refresh D-day labels every minute
 setInterval(() => { if(S.view === 'active' && !document.querySelector('.overlay.open')) render(); }, 60e3);
 render();
+promptConnect();
 })();
 </script>
 </body>

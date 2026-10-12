@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-11.5">
+<meta name="app-version" content="2026-10-12.1">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Task Cubes">
+<meta name="theme-color" content="#6a5af9">
 <title>Task Cubes</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
@@ -88,7 +93,15 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
 .check:hover{opacity:1;background:rgba(255,255,255,.25)}
 .check svg{width:11px;height:11px;opacity:0;transition:.12s}
 .check:hover svg{opacity:1}
-.cell.completing{transform:scale(.6);opacity:0}
+.cell.filled.done{--ink:color-mix(in srgb, var(--c) 55%, var(--text));background:color-mix(in srgb, var(--c) 30%, var(--surface));box-shadow:inset 0 0 0 1.5px color-mix(in srgb, var(--c) 75%, transparent);color:var(--ink)}
+.cell.filled.done:hover{box-shadow:inset 0 0 0 1.5px var(--c)}
+.cell.done .t{text-decoration:line-through;text-decoration-thickness:1.5px;opacity:.8}
+.cell.done .d{opacity:.9}
+.cell.done .check{opacity:1;border-color:var(--c);background:var(--c)}
+.cell.done .check svg{opacity:1;color:#fff}
+.cell.done .check:hover{background:transparent}
+.cell.done .check:hover svg{color:var(--c)}
+.cell.done .desc-dot{background:var(--ink)}
 
 /* ---------- completed view ---------- */
 .done-list{display:flex;flex-direction:column;gap:8px}
@@ -175,6 +188,7 @@ textarea.input{resize:vertical;min-height:80px}
     <button data-view="active">진행중</button>
     <button data-view="done">완료 <span id="doneCount"></span></button>
   </div>
+  <button class="iconbtn" id="archiveBtn" title="오늘 완료한 항목을 완료 탭으로 옮기기 (자정이 지나면 자동으로 옮겨져요)">✓ 완료 옮기기 <span class="count" id="archiveCount"></span></button>
   <div class="spacer"></div>
   <button class="iconbtn" id="themeBtn" title="색상 테마"><span class="swatch" id="themeSwatch"></span>색상</button>
   <button class="iconbtn" id="gcalBtn" title="Google 연결 · 캘린더 · 클라우드 저장"><span class="gdot" id="gcalDot"></span>Google<span class="cloudstat" id="cloudStat"></span></button>
@@ -438,9 +452,22 @@ function fmtStamp(ts){
 function dayKey(ts){ const d = new Date(ts); return d.getFullYear() + '년 ' + (d.getMonth()+1) + '월 ' + d.getDate() + '일 (' + WD[d.getDay()] + ')'; }
 
 /* ================= item helpers ================= */
-const active = (space, kind) => S.items.filter(i => i.space === space && i.kind === kind && !i.done);
+// Completed items stay on the board (faded, checked) until archived to the 완료 tab:
+// by the "완료 옮기기" button or automatically once the day they were completed is over.
+// Items without the flag (completed before this feature existed) count as archived.
+const isArchived = i => i.done && i.archived !== false;
+const onBoard = (space, kind) => S.items.filter(i => i.space === space && i.kind === kind && !isArchived(i));
+const pending = (space, kind) => S.items.filter(i => i.space === space && i.kind === kind && !i.done);
+const archivedOf = (space, kind) => S.items.filter(i => i.space === space && (!kind || i.kind === kind) && isArchived(i));
+const doneToday = space => S.items.filter(i => i.space === space && i.done && i.archived === false);
+function startOfToday(){ const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); }
+function autoArchive(){
+  const cut = startOfToday(); let n = 0;
+  for(const i of S.items) if(i.done && i.archived === false && (i.completedAt || 0) < cut){ i.archived = true; n++; }
+  return n;
+}
 function firstFreeSlot(space, kind){
-  const used = new Set(active(space, kind).map(i => i.slot));
+  const used = new Set(onBoard(space, kind).map(i => i.slot));
   let s = 0; while(used.has(s)) s++; return s;
 }
 // date-only deadlines: a task is due by the end of that day, an all-day event starts the day
@@ -451,7 +478,7 @@ function sortKey(it){
 const isSorted = (space, kind) => !!(kind === 'event' ? S.autoSort : S.taskSort)[space];
 function layout(space, kind){
   // returns array where index = displayed position, value = item or undefined
-  const list = active(space, kind);
+  const list = onBoard(space, kind);
   const out = [];
   if(isSorted(space, kind)){
     list.slice().sort((a,b) => sortKey(a) - sortKey(b) || a.createdAt - b.createdAt).forEach((it,i) => out[i] = it);
@@ -480,17 +507,19 @@ function render(){
   $$('#viewTabs button').forEach(b => b.classList.toggle('on', b.dataset.view === S.view));
   const th = S.theme[S.space];
   $('#themeSwatch').style.background = `linear-gradient(90deg, ${th.c1}, ${th.c2})`;
-  const doneN = S.items.filter(i => i.space === S.space && i.done).length;
+  const doneN = archivedOf(S.space).length;
   $('#doneCount').textContent = doneN ? doneN : '';
-  $('#sortToggle').checked = !!S.autoSort[S.space];
   const isActive = S.view === 'active';
+  const todayN = doneToday(S.space).length;
+  $('#archiveBtn').style.display = isActive && todayN ? '' : 'none';
+  $('#archiveCount').textContent = todayN;
+  $('#sortToggle').checked = !!S.autoSort[S.space];
   $('#sortToggleWrap').style.display = isActive ? '' : 'none';
   $('#taskSortToggle').checked = !!S.taskSort[S.space];
   $('#taskSortToggleWrap').style.display = isActive ? '' : 'none';
   $$('[data-add]').forEach(b => b.style.display = isActive ? '' : 'none');
   for(const kind of ['task','event']){
-    $(`[data-count=${kind}]`).textContent = isActive ? active(S.space, kind).length
-      : S.items.filter(i => i.space === S.space && i.kind === kind && i.done).length;
+    $(`[data-count=${kind}]`).textContent = isActive ? pending(S.space, kind).length : archivedOf(S.space, kind).length;
     isActive ? renderGrid(kind) : renderDone(kind);
   }
   updateGcalUi();
@@ -510,21 +539,24 @@ function renderGrid(kind){
     const it = cells[i];
     const slot = it ? it.slot : i;
     const bg = cellColor(S.space, kind, isSorted(S.space, kind) ? i : slot);
-    const c = el('div', { class:'cell ' + (it ? 'filled' : 'empty'), 'data-pos':i });
+    const c = el('div', { class:'cell ' + (it ? 'filled' + (it.done ? ' done' : '') : 'empty'), 'data-pos':i });
     c.style.setProperty('--c', bg);
     c.style.setProperty('--fg', fgFor(bg));
     if(it){
       c.dataset.id = it.id;
       c.draggable = !isSorted(S.space, kind);
       c.append(el('div', { class:'t' }, it.title));
-      const chk = el('button', { class:'check', title:'완료', 'aria-label':'완료 처리' });
+      const chk = el('button', { class:'check', title: it.done ? '완료 취소' : '완료', 'aria-label': it.done ? '완료 취소' : '완료 처리' });
       chk.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 6.5l2.5 2.5L10 3.5"/></svg>';
-      chk.addEventListener('click', e => { e.stopPropagation(); complete(it.id, c); });
+      chk.addEventListener('click', e => { e.stopPropagation(); it.done ? restore(it.id) : complete(it.id); });
       chk.addEventListener('dblclick', e => e.stopPropagation());
       c.append(chk);
       const meta = el('div', { class:'d' });
       if(it.gcalId) meta.append(el('span', { class:'gtag' }, 'G'));
-      if(it.date){
+      if(it.done){
+        const t = new Date(it.completedAt);
+        meta.append(el('span', null, '✓ ' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ' 완료'));
+      } else if(it.date){
         meta.append(el('span', null, fmtDeadline(it)));
         const dd = dday(it);
         meta.append(el('span', { class:'dd' + (dd.over ? ' over' : '') }, dd.label));
@@ -540,7 +572,7 @@ function renderGrid(kind){
 function renderDone(kind){
   const grid = grids[kind];
   grid.className = 'done-list';
-  const list = S.items.filter(i => i.space === S.space && i.kind === kind && i.done)
+  const list = archivedOf(S.space, kind)
     .sort((a,b) => b.completedAt - a.completedAt);
   if(!list.length){ grid.replaceChildren(el('div', { class:'empty-msg' }, '완료된 ' + KINDS[kind] + '이(가) 없습니다')); return; }
   const frag = document.createDocumentFragment();
@@ -565,20 +597,22 @@ function renderDone(kind){
 }
 
 /* ================= actions ================= */
-function complete(id, cellEl){
+function complete(id){
   const it = S.items.find(i => i.id === id); if(!it) return;
-  if(cellEl) cellEl.classList.add('completing');
-  setTimeout(() => {
-    it.done = true; it.completedAt = Date.now();
-    save(); render();
-    toast('"' + it.title + '" 완료 · ' + fmtStamp(it.completedAt), () => restore(id));
-  }, cellEl ? 220 : 0);
+  it.done = true; it.archived = false; it.completedAt = Date.now();
+  save(); render();
 }
 function restore(id){
   const it = S.items.find(i => i.id === id); if(!it) return;
-  if(active(it.space, it.kind).some(o => o.slot === it.slot)) it.slot = firstFreeSlot(it.space, it.kind);
-  it.done = false; delete it.completedAt;
+  if(isArchived(it) && onBoard(it.space, it.kind).some(o => o.slot === it.slot)) it.slot = firstFreeSlot(it.space, it.kind);
+  it.done = false; delete it.archived; delete it.completedAt;
   save(); render();
+}
+function archiveDoneToday(){
+  const list = doneToday(S.space); if(!list.length) return;
+  list.forEach(i => i.archived = true);
+  save(); render();
+  toast(list.length + '개를 완료 탭으로 옮겼어요', () => { list.forEach(i => i.archived = false); save(); render(); });
 }
 function removeItem(id, ask){
   const it = S.items.find(i => i.id === id); if(!it) return;
@@ -598,10 +632,12 @@ function showPop(cell){
   const title = el('div', { class:'pt' }, el('span', { class:'chip', style:'background:' + getComputedStyle(cell).getPropertyValue('--c') }), el('span', null, it.title));
   const desc = it.desc ? el('div', { class:'pd' }, it.desc) : el('div', { class:'pd none' }, '상세설명 없음');
   const meta = el('div', { class:'pm' });
+  if(it.done) meta.append(el('span', { class:'dd', style:'color:var(--ok)' }, '✓ ' + fmtStamp(it.completedAt) + ' 완료'));
   if(it.date){
     const dd = dday(it);
-    meta.append(el('span', null, '⏰ ' + fmtDeadline(it)), el('span', { class:'dd' + (dd.over ? ' over' : '') }, dd.label));
-  } else meta.append(el('span', null, '데드라인 없음'));
+    meta.append(el('span', null, '⏰ ' + fmtDeadline(it)));
+    if(!it.done) meta.append(el('span', { class:'dd' + (dd.over ? ' over' : '') }, dd.label));
+  } else if(!it.done) meta.append(el('span', null, '데드라인 없음'));
   if(it.gcalId) meta.append(el('span', null, '· Google 캘린더'));
   pop.replaceChildren(title, desc, meta);
   // place beside the square (right, else left), clamped to the viewport; below/above on narrow screens
@@ -712,7 +748,7 @@ $('#editForm').addEventListener('submit', e => {
   } else {
     const k = editing.kind;
     const manual = !isSorted(S.space, k);
-    const taken = editing.pos != null && active(S.space, k).some(i => i.slot === editing.pos);
+    const taken = editing.pos != null && onBoard(S.space, k).some(i => i.slot === editing.pos);
     const slot = (manual && editing.pos != null && !taken) ? editing.pos : firstFreeSlot(S.space, k);
     it = Object.assign({ id:uid(), space:S.space, kind:k, slot, done:false, createdAt:Date.now() }, data);
     S.items.push(it);
@@ -738,6 +774,7 @@ document.addEventListener('keydown', e => {
 $('#spaceTabs').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; S.space = b.dataset.space; save(); render(); });
 $('#viewTabs').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; S.view = b.dataset.view; save(); render(); });
 $('#sortToggle').addEventListener('change', e => { S.autoSort[S.space] = e.target.checked; save(); render(); });
+$('#archiveBtn').addEventListener('click', archiveDoneToday);
 $('#taskSortToggle').addEventListener('change', e => { S.taskSort[S.space] = e.target.checked; save(); render(); });
 
 /* ---------- theme ---------- */
@@ -1001,7 +1038,7 @@ function normalizeSlots(){
   // two devices may have put different items in the same square; keep the older one, move the newer
   for(const space of Object.keys(SPACES)) for(const kind of Object.keys(KINDS)){
     const used = new Set();
-    active(space, kind).sort((a,b) => (a.updatedAt||0) - (b.updatedAt||0) || (a.id < b.id ? -1 : 1)).forEach(it => {
+    onBoard(space, kind).sort((a,b) => (a.updatedAt||0) - (b.updatedAt||0) || (a.id < b.id ? -1 : 1)).forEach(it => {
       if(used.has(it.slot)){ let s = 0; while(used.has(s)) s++; it.slot = s; }
       used.add(it.slot);
     });
@@ -1028,6 +1065,7 @@ function mergeRemote(R){
   }
   if(R.gcal && Array.isArray(R.gcal.ignored)) S.gcal.ignored = [...new Set(S.gcal.ignored.concat(R.gcal.ignored))];
   normalizeSlots();
+  autoArchive();
 }
 async function cloudFind(){
   if(cloudFileId) return cloudFileId;
@@ -1093,8 +1131,14 @@ if(location.hash.length > 1){
 let rt;
 new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if(S.view === 'active') render(); }, 60); })
   .observe(document.querySelector('main'));
-// refresh D-day labels every minute
-setInterval(() => { if(S.view === 'active' && !document.querySelector('.overlay.open')) render(); }, 60e3);
+// every minute: refresh D-day labels and move yesterday's completions to the 완료 tab after midnight
+function tick(){
+  if(autoArchive()) save();
+  if(!document.querySelector('.overlay.open')) render();
+}
+setInterval(tick, 60e3);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) tick(); });
+if(autoArchive()) save();
 render();
 if(G.token){ setToken(G.token, G.expires); if(S.cloud) cloudSync(); }   // restored session: arm expiry, pull changes
 else promptConnect();

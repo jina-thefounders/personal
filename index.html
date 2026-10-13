@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-12.1">
+<meta name="app-version" content="2026-10-13.1">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -73,7 +73,7 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
 .smallbtn{font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid var(--line)}
 .smallbtn:hover{background:var(--surface-2)}
 
-.grid-wrap{flex:1;min-height:0;overflow:auto;scrollbar-width:thin}
+.grid-wrap{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-gutter:stable}  /* width never changes when a scrollbar appears */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--cell),1fr));gap:var(--gap);align-content:start}
 .cell{position:relative;aspect-ratio:1/1;border-radius:var(--radius);background:var(--c);user-select:none;transition:transform .12s, opacity .25s, box-shadow .12s;overflow:hidden}
 .cell.empty{opacity:.26;cursor:copy}
@@ -531,6 +531,7 @@ function renderGrid(kind){
   grid.className = 'grid';
   const cells = layout(S.space, kind);
   const { cols, total } = capacity(grid);
+  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;  // same column count the slot math uses
   let n = Math.max(total, cells.length);
   n = Math.ceil(n / cols) * cols;
   if(cells.length > total - cols) n += cols; // always keep at least one spare row
@@ -572,6 +573,7 @@ function renderGrid(kind){
 function renderDone(kind){
   const grid = grids[kind];
   grid.className = 'done-list';
+  grid.style.gridTemplateColumns = '';
   const list = archivedOf(S.space, kind)
     .sort((a,b) => b.completedAt - a.completedAt);
   if(!list.length){ grid.replaceChildren(el('div', { class:'empty-msg' }, '완료된 ' + KINDS[kind] + '이(가) 없습니다')); return; }

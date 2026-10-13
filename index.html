@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-13.1">
+<meta name="app-version" content="2026-10-13.2">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -73,7 +73,7 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
 .smallbtn{font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid var(--line)}
 .smallbtn:hover{background:var(--surface-2)}
 
-.grid-wrap{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-gutter:stable}  /* width never changes when a scrollbar appears */
+.grid-wrap{flex:1;min-height:0;overflow:auto;scrollbar-width:thin}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--cell),1fr));gap:var(--gap);align-content:start}
 .cell{position:relative;aspect-ratio:1/1;border-radius:var(--radius);background:var(--c);user-select:none;transition:transform .12s, opacity .25s, box-shadow .12s;overflow:hidden}
 .cell.empty{opacity:.26;cursor:copy}
@@ -491,14 +491,24 @@ function layout(space, kind){
 /* ================= rendering ================= */
 const grids = { task: $('[data-grid=task]'), event: $('[data-grid=event]') };
 
-function capacity(grid){
+// Fit the grid to the visible area so it never scrolls: start from the chosen cube size and,
+// only if more squares are needed than fit, add columns (smaller cubes) instead of rows.
+const MIN_CUBE = 56;
+function capacity(grid, need){
   const wrap = grid.parentElement;
-  const w = wrap.clientWidth, h = wrap.clientHeight;
-  const cell = cellPx(), gap = 8;
-  const cols = Math.max(1, Math.floor((w + gap) / (cell + gap)));
-  const cw = (w - gap*(cols-1)) / cols;
-  const rows = Math.max(1, Math.floor((h + gap) / (cw + gap)));
-  return { cols, total: cols*rows };
+  const w = wrap.clientWidth, h = wrap.clientHeight, gap = 8;
+  const fit = cols => {
+    const cw = (w - gap*(cols-1)) / cols;
+    const rows = Math.max(1, Math.floor((h + gap - 1) / (cw + gap)));   // -1px guards against sub-pixel overflow
+    return { cols, rows, cw, total: cols*rows };
+  };
+  let g = fit(Math.max(1, Math.floor((w + gap) / (cellPx() + gap))));
+  while(g.total < need){
+    const next = fit(g.cols + 1);
+    if(next.cw < MIN_CUBE) break;   // too many items to fit at a readable size: let it scroll
+    g = next;
+  }
+  return g;
 }
 
 function render(){
@@ -530,11 +540,11 @@ function renderGrid(kind){
   const grid = grids[kind];
   grid.className = 'grid';
   const cells = layout(S.space, kind);
-  const { cols, total } = capacity(grid);
+  const filled = cells.filter(Boolean).length;
+  const need = Math.max(cells.length, filled + 1);   // every item's square + at least one empty square
+  const { cols, total } = capacity(grid, need);
   grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;  // same column count the slot math uses
-  let n = Math.max(total, cells.length);
-  n = Math.ceil(n / cols) * cols;
-  if(cells.length > total - cols) n += cols; // always keep at least one spare row
+  const n = Math.ceil(Math.max(total, need) / cols) * cols;
   const frag = document.createDocumentFragment();
   for(let i=0;i<n;i++){
     const it = cells[i];

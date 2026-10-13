@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-13.2">
+<meta name="app-version" content="2026-10-13.3">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -127,7 +127,8 @@ main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
 .field label .opt{font-weight:400}
 .input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg);outline:none}
 .input:focus{border-color:var(--text)}
-textarea.input{resize:vertical;min-height:80px}
+textarea.input{resize:vertical;min-height:80px;line-height:1.55}
+#editForm.event textarea.input{min-height:200px}
 .row{display:flex;gap:8px;align-items:center}
 .row .input{flex:1}
 .check-inline{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer}
@@ -238,11 +239,11 @@ textarea.input{resize:vertical;min-height:80px}
       <input class="input" id="fTitle" required maxlength="120">
     </div>
     <div class="field">
-      <label for="fDesc">상세설명 <span class="opt">(선택)</span></label>
+      <label for="fDesc"><span id="lblDesc">상세설명</span> <span class="opt">(선택)</span></label>
       <textarea class="input" id="fDesc" maxlength="2000"></textarea>
     </div>
     <div class="field">
-      <label for="fDate">데드라인 <span class="opt">(선택 · 날짜만 또는 시간까지)</span></label>
+      <label for="fDate"><span id="lblDate">데드라인</span> <span class="opt">(선택 · 날짜만 또는 시간까지)</span></label>
       <div class="row">
         <input class="input" type="date" id="fDate">
         <input class="input" type="time" id="fTime" style="max-width:130px">
@@ -595,7 +596,7 @@ function renderDone(kind){
     const body = el('div', { class:'body' }, el('div', { class:'ti' }, it.title));
     if(it.desc) body.append(el('div', { class:'ds' }, it.desc));
     const meta = el('div', { class:'meta' }, el('span', null, '✓ 완료 ', el('b', null, fmtStamp(it.completedAt))));
-    if(it.date) meta.append(el('span', null, '데드라인 ' + fmtDeadline(it)));
+    if(it.date) meta.append(el('span', null, FIELD[it.kind].date + ' ' + fmtDeadline(it)));
     body.append(meta);
     frag.append(el('div', { class:'done-item' },
       el('span', { class:'chip', style:'background:' + cellColor(it.space, it.kind, it.slot) }),
@@ -642,14 +643,14 @@ function showPop(cell){
   const it = S.items.find(i => i.id === cell.dataset.id); if(!it) return;
   popId = it.id;
   const title = el('div', { class:'pt' }, el('span', { class:'chip', style:'background:' + getComputedStyle(cell).getPropertyValue('--c') }), el('span', null, it.title));
-  const desc = it.desc ? el('div', { class:'pd' }, it.desc) : el('div', { class:'pd none' }, '상세설명 없음');
+  const desc = it.desc ? el('div', { class:'pd' }, it.desc) : el('div', { class:'pd none' }, FIELD[it.kind].desc + ' 없음');
   const meta = el('div', { class:'pm' });
   if(it.done) meta.append(el('span', { class:'dd', style:'color:var(--ok)' }, '✓ ' + fmtStamp(it.completedAt) + ' 완료'));
   if(it.date){
     const dd = dday(it);
     meta.append(el('span', null, '⏰ ' + fmtDeadline(it)));
     if(!it.done) meta.append(el('span', { class:'dd' + (dd.over ? ' over' : '') }, dd.label));
-  } else if(!it.done) meta.append(el('span', null, '데드라인 없음'));
+  } else if(!it.done) meta.append(el('span', null, FIELD[it.kind].date + ' 없음'));
   if(it.gcalId) meta.append(el('span', null, '· Google 캘린더'));
   pop.replaceChildren(title, desc, meta);
   // place beside the square (right, else left), clamped to the viewport; below/above on narrow screens
@@ -729,6 +730,7 @@ $$('[data-add]').forEach(b => b.addEventListener('click', () => openEditor({ kin
 
 /* ---------- editor ---------- */
 let editing = null;
+const FIELD = { task:{ desc:'상세설명', date:'데드라인' }, event:{ desc:'확인사항', date:'일정' } };
 function openEditor({ id, kind, pos }){
   const it = id ? S.items.find(i => i.id === id) : null;
   kind = it ? it.kind : kind;
@@ -736,6 +738,9 @@ function openEditor({ id, kind, pos }){
   $('#editTitle').textContent = (it ? KINDS[kind] + ' 수정' : '새 ' + KINDS[kind]) + ' · ' + SPACES[S.space];
   $('#editSub').textContent = it ? (it.gcalId ? '구글 캘린더와 연결된 항목입니다' : '생성 ' + fmtStamp(it.createdAt))
     : (pos != null && !isSorted(S.space, kind) ? '더블클릭한 칸에 추가됩니다' : '빈 칸에 추가됩니다');
+  $('#lblDesc').textContent = FIELD[kind].desc;
+  $('#lblDate').textContent = FIELD[kind].date;
+  $('#editForm').classList.toggle('event', kind === 'event');
   $('#fTitle').value = it ? it.title : '';
   $('#fDesc').value = it ? it.desc || '' : '';
   $('#fDate').value = it ? it.date || '' : '';

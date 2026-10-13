@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-13.3">
+<meta name="app-version" content="2026-10-13.4">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -55,7 +55,7 @@ header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:
 .cloudstat:empty{display:none}
 
 /* ---------- main ---------- */
-main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
+main{flex:1;display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);min-height:0}  /* 할 일 : 행사 = 2 : 1 */
 .panel{display:flex;flex-direction:column;min-height:0;min-width:0;padding:16px 20px 20px}
 .panel + .panel{border-left:1px solid var(--line)}
 .panel-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
@@ -495,9 +495,16 @@ const grids = { task: $('[data-grid=task]'), event: $('[data-grid=event]') };
 // Fit the grid to the visible area so it never scrolls: start from the chosen cube size and,
 // only if more squares are needed than fit, add columns (smaller cubes) instead of rows.
 const MIN_CUBE = 56;
-function capacity(grid, need){
+// matchCw: reuse the 할 일 panel's cube size so both panels show identical cubes (fixed-width
+// columns, leftover space stays at the edge); falls back to its own fit if that doesn't hold enough.
+function capacity(grid, need, matchCw){
   const wrap = grid.parentElement;
   const w = wrap.clientWidth, h = wrap.clientHeight, gap = 8;
+  if(matchCw){
+    const cols = Math.max(1, Math.floor((w + gap + 0.5) / (matchCw + gap)));
+    const rows = Math.max(1, Math.floor((h + gap - 1) / (matchCw + gap)));
+    if(cols * rows >= need) return { cols, rows, cw:matchCw, total:cols*rows, fixed:true };
+  }
   const fit = cols => {
     const cw = (w - gap*(cols-1)) / cols;
     const rows = Math.max(1, Math.floor((h + gap - 1) / (cw + gap)));   // -1px guards against sub-pixel overflow
@@ -512,7 +519,22 @@ function capacity(grid, need){
   return g;
 }
 
+// 할 일 : 행사 ≈ 2 : 1. Split the full width into N equal cube columns (cubes at least the chosen
+// size), give about a third of them (min 2) to 행사, and size its panel to fit them exactly, so both
+// panels show identical cubes with no leftover strip.
+function layoutPanels(){
+  const main = $('main');
+  if(matchMedia('(max-width: 820px)').matches){ main.style.gridTemplateColumns = ''; return; }
+  const W = main.clientWidth, gap = 8, pads = 40 + 41;   // both panels' padding + divider border
+  const N = Math.max(3, Math.floor((W - pads + 2*gap) / (cellPx() + gap)));
+  const k = Math.max(2, Math.round(N / 3));
+  const cw = (W - pads - (N - 2) * gap) / N;
+  const ew = k * cw + (k - 1) * gap + 41;
+  main.style.gridTemplateColumns = `minmax(0,1fr) ${ew.toFixed(2)}px`;
+}
+
 function render(){
+  layoutPanels();
   document.documentElement.style.setProperty('--cell', cellPx() + 'px');
   $$('#spaceTabs button').forEach(b => b.classList.toggle('on', b.dataset.space === S.space));
   $$('#viewTabs button').forEach(b => b.classList.toggle('on', b.dataset.view === S.view));
@@ -537,14 +559,19 @@ function render(){
   if(popId){ const c = document.querySelector('.cell.filled[data-id="' + popId + '"]'); c && S.view === 'active' ? showPop(c) : hidePop(); }
 }
 
+let taskCw = 0;
 function renderGrid(kind){
   const grid = grids[kind];
   grid.className = 'grid';
   const cells = layout(S.space, kind);
   const filled = cells.filter(Boolean).length;
   const need = Math.max(cells.length, filled + 1);   // every item's square + at least one empty square
-  const { cols, total } = capacity(grid, need);
-  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;  // same column count the slot math uses
+  // the two panels sit side by side only on wide screens; match cube sizes there
+  const sideBySide = !matchMedia('(max-width: 820px)').matches;
+  const { cols, total, cw, fixed } = capacity(grid, need, kind === 'event' && sideBySide ? taskCw : 0);
+  if(kind === 'task') taskCw = cw;
+  // same column count the slot math uses
+  grid.style.gridTemplateColumns = fixed ? `repeat(${cols}, ${cw}px)` : `repeat(${cols}, minmax(0, 1fr))`;
   const n = Math.ceil(Math.max(total, need) / cols) * cols;
   const frag = document.createDocumentFragment();
   for(let i=0;i<n;i++){

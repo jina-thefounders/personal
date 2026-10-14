@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-14.1">
+<meta name="app-version" content="2026-10-14.2">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -530,16 +530,10 @@ const grids = { task: $('[data-grid=task]'), event: $('[data-grid=event]') };
 // Fit the grid to the visible area so it never scrolls: start from the chosen cube size and,
 // only if more squares are needed than fit, add columns (smaller cubes) instead of rows.
 const MIN_CUBE = 56;
-// matchCw: reuse the 할 일 panel's cube size so both panels show identical cubes (fixed-width
-// columns, leftover space stays at the edge); falls back to its own fit if that doesn't hold enough.
-function capacity(grid, need, matchCw){
+// Fallback when the board-wide size can't hold a panel's items: fit this grid on its own.
+function capacity(grid, need){
   const wrap = grid.parentElement;
   const w = wrap.clientWidth, h = wrap.clientHeight, gap = 8;
-  if(matchCw){
-    const cols = Math.max(1, Math.floor((w + gap + 0.5) / (matchCw + gap)));
-    const rows = Math.max(1, Math.floor((h + gap - 1) / (matchCw + gap)));
-    if(cols * rows >= need) return { cols, rows, cw:matchCw, total:cols*rows, fixed:true };
-  }
   const fit = cols => {
     const cw = (w - gap*(cols-1)) / cols;
     const rows = Math.max(1, Math.floor((h + gap - 1) / (cw + gap)));   // -1px guards against sub-pixel overflow
@@ -554,18 +548,35 @@ function capacity(grid, need, matchCw){
   return g;
 }
 
-// 할 일 : 행사 ≈ 2 : 1 (1 : 1 on the private tab, whose 행사 is a month calendar). Split the full width into N equal cube columns (cubes at least the chosen
-// size), give about a third of them (min 2) to 행사, and size its panel to fit them exactly, so both
-// panels show identical cubes with no leftover strip.
+// One cube size for the whole board, so cubes never change size when switching tabs or views.
+// Desktop: split the width into N equal cube columns and give 행사 about a third of them
+// (half on the private tab, whose 행사 is a month calendar; min 2). N grows (smaller cubes) only
+// when some panel in either tab has more items than fit, and then it applies to every panel.
+const needOf = (space, kind) => { const c = layout(space, kind); return Math.max(c.length, c.filter(Boolean).length + 1); };
+let LAY = null;
 function layoutPanels(){
-  const main = $('main');
-  if(matchMedia('(max-width: 820px)').matches){ main.style.gridTemplateColumns = ''; return; }
-  const W = main.clientWidth, gap = 8, pads = 40 + 41;   // both panels' padding + divider border
-  const N = Math.max(3, Math.floor((W - pads + 2*gap) / (cellPx() + gap)));
-  const k = Math.max(2, Math.round(N / (calMode() ? 2 : 3)));   // private: month calendar needs ~half the width
-  const cw = (W - pads - (N - 2) * gap) / N;
-  const ew = k * cw + (k - 1) * gap + 41;
-  main.style.gridTemplateColumns = `minmax(0,1fr) ${ew.toFixed(2)}px`;
+  const main = $('main'), gap = 8;
+  const H = grids.task.parentElement.clientHeight;
+  const rowsFor = cw => Math.max(1, Math.floor((H + gap - 1) / (cw + gap)));
+  const need = { work:needOf('work','task'), priv:needOf('private','task'), ev:needOf('work','event') };
+  if(matchMedia('(max-width: 820px)').matches){   // phones: panels stacked, full width each
+    main.style.gridTemplateColumns = '';
+    const w = grids.task.parentElement.clientWidth, most = Math.max(need.work, need.priv, need.ev);
+    let c = Math.max(1, Math.floor((w + gap) / (cellPx() + gap)));
+    while(most > c * rowsFor((w - gap*(c-1)) / c) && (w - gap*c) / (c+1) >= MIN_CUBE) c++;
+    LAY = { cw: Math.floor((w - gap*(c-1)) / c * 100) / 100, cols:{ task:c, event:c } };
+    return;
+  }
+  const W = main.clientWidth, pads = 40 + 41;   // both panels' padding + divider border
+  const kFor = (N, space) => Math.max(2, Math.round(N / (space === 'private' ? 2 : 3)));
+  const cwFor = N => (W - pads - (N - 2) * gap) / N;
+  const fits = N => { const r = rowsFor(cwFor(N));
+    return need.work <= (N - kFor(N,'work')) * r && need.priv <= (N - kFor(N,'private')) * r && need.ev <= kFor(N,'work') * r; };
+  let N = Math.max(3, Math.floor((W - pads + 2*gap) / (cellPx() + gap)));
+  while(!fits(N) && cwFor(N + 1) >= MIN_CUBE) N++;
+  const cw = Math.floor(cwFor(N) * 100) / 100, k = kFor(N, S.space);
+  main.style.gridTemplateColumns = `minmax(0,1fr) ${(k * cw + (k - 1) * gap + 41).toFixed(2)}px`;
+  LAY = { cw, cols:{ task:N - k, event:k } };
 }
 
 function render(){
@@ -680,19 +691,21 @@ function maybeCalSync(force){
     .finally(() => { calSyncing = false; });
 }
 
-let taskCw = 0;
 function renderGrid(kind){
   const grid = grids[kind];
   grid.className = 'grid';
   const cells = layout(S.space, kind);
   const filled = cells.filter(Boolean).length;
   const need = Math.max(cells.length, filled + 1);   // every item's square + at least one empty square
-  // the two panels sit side by side only on wide screens; match cube sizes there
-  const sideBySide = !matchMedia('(max-width: 820px)').matches;
-  const { cols, total, cw, fixed } = capacity(grid, need, kind === 'event' && sideBySide ? taskCw : 0);
-  if(kind === 'task') taskCw = cw;
-  // same column count the slot math uses
-  grid.style.gridTemplateColumns = fixed ? `repeat(${cols}, ${cw}px)` : `repeat(${cols}, minmax(0, 1fr))`;
+  // board-wide cube size from layoutPanels(); rows from this panel's own height
+  let cols, total, tmpl;
+  if(LAY){
+    cols = LAY.cols[kind];
+    total = cols * Math.max(1, Math.floor((grid.parentElement.clientHeight + 7) / (LAY.cw + 8)));
+    if(total >= need) tmpl = `repeat(${cols}, ${LAY.cw}px)`;
+  }
+  if(!tmpl){ const g = capacity(grid, need); cols = g.cols; total = g.total; tmpl = `repeat(${cols}, minmax(0, 1fr))`; }
+  grid.style.gridTemplateColumns = tmpl;   // same column count the slot math uses
   const n = Math.ceil(Math.max(total, need) / cols) * cols;
   const frag = document.createDocumentFragment();
   for(let i=0;i<n;i++){

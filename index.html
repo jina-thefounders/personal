@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-14.2">
+<meta name="app-version" content="2026-10-14.3">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -125,6 +125,7 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);min-h
 .cal-ev.timed::before{content:'';position:absolute;left:3px;top:5px;width:6px;height:6px;border-radius:50%;background:var(--c)}
 .cal-ev.timed:hover{background:color-mix(in srgb, var(--text) 7%, transparent)}
 .cal-ev.done{opacity:.45;text-decoration:line-through}
+.cal-ev.pending{outline:1.5px dashed color-mix(in srgb, var(--text) 55%, transparent);outline-offset:-1.5px}
 .cal .more{font-size:10.5px;color:var(--muted);padding:0 5px;cursor:pointer;flex:none;line-height:15px}
 .cal .more:hover{color:var(--text)}
 @container (max-width: 520px){ .cal-ev .tm{display:none} .cal-ev{padding:0 3px} .cal-ev.timed{padding-left:9px} .cal-ev.timed::before{left:2px} }
@@ -378,7 +379,7 @@ const defaults = () => ({
   theme:{ work:{c1:'#6a5af9', c2:'#4fc3f7', seed:1}, private:{c1:'#f6d365', c2:'#fda085', seed:1} },
   autoSort:{ work:true, private:true },     // schedules: chronological
   taskSort:{ work:false, private:false },   // tasks: by deadline
-  gcal:{ clientId:'', calendars:{work:'primary', private:'primary'}, push:true, ignored:[] },
+  gcal:{ clientId:'', calendars:{work:'primary', private:'primary'}, push:true, ignored:[], pendingDel:[], calColor:{} },
   cloud:false,          // per-device: save to Google Drive appDataFolder
   settingsAt:0,         // last change of synced settings (theme, sort, size, calendars)
   deleted:{},           // tombstones {id: ts} so deletions propagate across devices
@@ -393,6 +394,8 @@ function load(){
   }catch(e){}
   return defaults();
 }
+function normGcal(){ S.gcal.pendingDel = S.gcal.pendingDel || []; S.gcal.calColor = S.gcal.calColor || {}; S.gcal.ignored = S.gcal.ignored || []; }
+normGcal();
 function saveLocal(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 function save(){ stamp(); saveLocal(); scheduleCloud(); }
 
@@ -630,10 +633,16 @@ function eventsByDay(space){
   for(const k in map) map[k].sort((a,b) => (!!a.time - !!b.time) || (a.time||'').localeCompare(b.time||'') || a.title.localeCompare(b.title));
   return map;
 }
-function evColor(it){ return cellColor(it.space, it.kind, it.slot); }
+// Google Calendar event colors (colorId 1-11, as shown in the Google Calendar app)
+const GCOLORS = { 1:'#7986cb', 2:'#33b679', 3:'#8e24aa', 4:'#e67c73', 5:'#f6bf26', 6:'#f4511e', 7:'#039be5', 8:'#616161', 9:'#3f51b5', 10:'#0b8043', 11:'#d50000' };
+// calendar chips follow Google: the event's own color, else the calendar's color, else the board theme
+function evColor(it){ return it.gcolor || S.gcal.calColor[it.space] || cellColor(it.space, it.kind, it.slot); }
+// waiting to be sent to Google Calendar (new, or edited since the last upload)
+const gPending = it => it.kind === 'event' && !it.done && !!it.date && (!it.gcalId || !!it.gdirty);
+const gTracking = () => S.gcal.push && !!S.gcal.clientId;
 function evChip(it){
   const bg = evColor(it);
-  const c = el('div', { class:'cal-ev' + (it.time ? ' timed' : '') + (it.done ? ' done' : ''), 'data-id':it.id, draggable:'true' },
+  const c = el('div', { class:'cal-ev' + (it.time ? ' timed' : '') + (it.done ? ' done' : '') + (gTracking() && gPending(it) ? ' pending' : ''), 'data-id':it.id, draggable:'true' },
     it.time ? el('span', { class:'tm' }, it.time + ' ') : null, it.title);
   c.style.setProperty('--c', bg); c.style.setProperty('--fg', fgFor(bg));
   return c;
@@ -790,8 +799,10 @@ function archiveDoneToday(){
 }
 function removeItem(id, ask){
   const it = S.items.find(i => i.id === id); if(!it) return;
-  if(ask && !confirm('"' + it.title + '"을(를) 삭제할까요?' + (it.gcalId ? '\n(구글 캘린더의 원본 일정은 그대로 남고, 이후 동기화에서 다시 가져오지 않습니다)' : ''))) return false;
+  const alsoGoogle = it.gcalId && S.gcal.push;
+  if(ask && !confirm('"' + it.title + '"을(를) 삭제할까요?' + (alsoGoogle ? '\n(구글 캘린더에서도 삭제됩니다)' : it.gcalId ? '\n(구글 캘린더의 원본 일정은 그대로 남고, 이후 동기화에서 다시 가져오지 않습니다)' : ''))) return false;
   if(it.gcalId && !S.gcal.ignored.includes(it.gcalId)) S.gcal.ignored.push(it.gcalId);
+  if(alsoGoogle){ S.gcal.pendingDel.push({ space:it.space, id:it.gcalId }); setTimeout(flushGcal, 0); }
   S.items = S.items.filter(i => i.id !== id);
   save(); render();
   return true;
@@ -815,7 +826,8 @@ function showPop(cell){
     meta.append(el('span', null, '⏰ ' + range));
     if(!it.done) meta.append(el('span', { class:'dd' + (dd.over ? ' over' : '') }, dd.label));
   } else if(!it.done) meta.append(el('span', null, FIELD[it.kind].date + ' 없음'));
-  if(it.gcalId) meta.append(el('span', null, '· Google 캘린더'));
+  if(it.kind === 'event' && gTracking() && gPending(it)) meta.append(el('span', { style:'color:var(--danger)' }, '· Google 반영 대기'));
+  else if(it.gcalId) meta.append(el('span', null, '· Google 캘린더'));
   pop.replaceChildren(title, desc, meta);
   placePop(cell);
 }
@@ -927,6 +939,7 @@ for(const kind of ['task','event']){
     const shift = Math.round((itemDate({ date:d.dataset.date }) - itemDate({ date:it.date })) / 864e5);
     if(it.endDate){ const e2 = itemDate({ date:it.endDate }); e2.setDate(e2.getDate() + shift); it.endDate = ymd(e2); }
     it.date = d.dataset.date;
+    if(it.gcalId) it.gdirty = true;
     save(); render(); gcalPushOne(it);
   });
 }
@@ -967,6 +980,7 @@ $('#editForm').addEventListener('submit', e => {
   if(editing.id){
     it = S.items.find(i => i.id === editing.id);
     Object.assign(it, data);
+    if(it.gcalId) it.gdirty = true;
   } else {
     const k = editing.kind;
     const manual = !isSorted(S.space, k);
@@ -976,7 +990,10 @@ $('#editForm').addEventListener('submit', e => {
     S.items.push(it);
   }
   save(); closeModals(); render();
-  if(it.kind === 'event') gcalPushOne(it);
+  if(it.kind === 'event'){
+    gcalPushOne(it);
+    if(gTracking() && !connected()) toast('Google 캘린더에는 연결하면 바로 반영돼요', connectGoogle, '연결');
+  }
 });
 $('#deleteBtn').addEventListener('click', () => { if(editing && editing.id && removeItem(editing.id, true)) closeModals(); });
 
@@ -1033,7 +1050,7 @@ $('#importFile').addEventListener('change', async e => {
     const d = JSON.parse(await f.text());
     if(!Array.isArray(d.items)) throw new Error('형식 오류');
     if(!confirm('현재 데이터를 가져온 파일로 교체할까요?')) return;
-    S = Object.assign(defaults(), d); save(); render(); toast('가져오기 완료');
+    S = Object.assign(defaults(), d); normGcal(); save(); render(); toast('가져오기 완료');
   }catch(err){ alert('가져오기 실패: ' + err.message); }
   e.target.value = '';
 });
@@ -1068,7 +1085,7 @@ try{
   if(saved && saved.exp > Date.now() + 60e3){ G.token = saved.t; G.expires = saved.exp; }
   else localStorage.removeItem(TOKEN_KEY);
 }catch(e){}
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata';
+const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/drive.appdata';
 const API = 'https://www.googleapis.com/calendar/v3';
 const connected = () => G.token && Date.now() < G.expires;
 
@@ -1147,7 +1164,9 @@ async function ensureToken(interactive){
       callback: r => {
         if(r.error) return rej(new Error('인증 실패: ' + r.error));
         setToken(r.access_token, Date.now() + (r.expires_in - 60) * 1000);
+        G.calColorFetched = {};
         updateGcalUi(); res();
+        setTimeout(flushGcal, 300);
       },
       error_callback: e => rej(new Error('인증 창이 닫혔습니다' + (e && e.type ? ' (' + e.type + ')' : '')))
     });
@@ -1187,6 +1206,7 @@ function fromGoogle(ev){
     out.time = pad(d.getHours()) + ':' + pad(d.getMinutes());
   } else if(ev.start && ev.start.date){ out.date = ev.start.date; out.time = ''; }
   else { out.date = ''; out.time = ''; }
+  out.gcolor = ev.colorId && GCOLORS[ev.colorId] || '';
   // end: inclusive last day for multi-day events, end time for timed events
   out.endDate = ''; out.endTime = '';
   if(ev.end && ev.end.dateTime && out.time){
@@ -1202,17 +1222,55 @@ function fromGoogle(ev){
   }
   return out;
 }
-async function gcalPushOne(it){
-  if(!S.gcal.push || !connected() || !it.date) return;
-  const cal = encodeURIComponent(S.gcal.calendars[it.space] || 'primary');
+// Upload one event (create or update). G.pushing guards against creating the same event twice
+// when a sync runs at the same moment.
+G.pushing = new Set(); G.calColorFetched = {};
+async function uploadEvent(it){
+  if(G.pushing.has(it.id)) return false;
+  G.pushing.add(it.id);
   try{
+    const cal = encodeURIComponent(S.gcal.calendars[it.space] || 'primary');
     if(it.gcalId) await gapi(`/calendars/${cal}/events/${encodeURIComponent(it.gcalId)}`, { method:'PATCH', body:JSON.stringify(toGoogle(it)) });
-    else { const r = await gapi(`/calendars/${cal}/events`, { method:'POST', body:JSON.stringify(toGoogle(it)) }); it.gcalId = r.id; save(); render(); }
-  }catch(err){ toast('구글 캘린더 반영 실패: ' + err.message); }
+    else { const r = await gapi(`/calendars/${cal}/events`, { method:'POST', body:JSON.stringify(toGoogle(it)) }); it.gcalId = r.id; }
+    delete it.gdirty; it.gpushedAt = Date.now();
+    return true;
+  } finally { G.pushing.delete(it.id); }
 }
-async function syncSpace(space, tMin, tMax){
+async function gcalPushOne(it){
+  if(!S.gcal.push || !connected() || !gPending(it)) return;
+  try{ if(await uploadEvent(it)){ save(); render(); } }
+  catch(err){ toast('구글 캘린더 반영 실패 · 다음 동기화 때 다시 시도해요 (' + err.message.slice(0, 80) + ')'); }
+}
+async function connectGoogle(){ try{ await ensureToken(true); }catch(err){ alert(err.message); } }
+// Upload everything waiting (new/edited events, deletions) for both spaces, pulling changes too.
+function flushGcal(){
+  if(!connected() || !S.gcal.push) return;
+  for(const space of Object.keys(SPACES)){
+    if(S.items.some(i => i.space === space && gPending(i)) || S.gcal.pendingDel.some(d => d.space === space))
+      syncSpace(space).then(r => { if(r.added || r.updated || r.removed || r.pushed){ save(); render(); } }).catch(() => {});
+  }
+}
+// syncs run one at a time so two of them can't upload the same event
+let syncQueue = Promise.resolve();
+function syncSpace(space, tMin, tMax){
+  const run = syncQueue.catch(() => {}).then(() => syncSpaceNow(space, tMin, tMax));
+  syncQueue = run;
+  return run;
+}
+async function syncSpaceNow(space, tMin, tMax){
   const cal = encodeURIComponent(S.gcal.calendars[space] || 'primary');
-  const now = Date.now();
+  const now = Date.now(), fetchStart = Date.now();
+  // deletions made here
+  for(const d of S.gcal.pendingDel.filter(d => d.space === space)){
+    try{ await gapi(`/calendars/${cal}/events/${encodeURIComponent(d.id)}`, { method:'DELETE' }); }
+    catch(err){ if(!/ (404|410):/.test(err.message)) continue; }   // already gone counts as done
+    S.gcal.pendingDel = S.gcal.pendingDel.filter(x => x !== d);
+  }
+  // the calendar's own color (needs calendarlist.readonly; skipped quietly if not granted)
+  if(!G.calColorFetched[space]){
+    G.calColorFetched[space] = true;
+    try{ const c = await gapi(`/users/me/calendarList/${cal}`); if(c && c.backgroundColor) S.gcal.calColor[space] = c.backgroundColor; }catch(e){}
+  }
   tMin = tMin || new Date(now - 7*864e5); tMax = tMax || new Date(now + 90*864e5);
   let pageToken = '', events = [];
   do{
@@ -1229,7 +1287,8 @@ async function syncSpace(space, tMin, tMax){
     const data = fromGoogle(ev);
     const ex = S.items.find(i => i.gcalId === ev.id);
     if(ex){
-      if(!ex.done && ['title','desc','date','time','endDate','endTime'].some(k => (ex[k] || '') !== data[k])){ Object.assign(ex, data); updated++; }
+      if(ex.gdirty && S.gcal.push) continue;   // edited here since the last upload: ours wins, pushed below
+      if(!ex.done && ['title','desc','date','time','endDate','endTime','gcolor'].some(k => (ex[k] || '') !== data[k])){ Object.assign(ex, data); updated++; }
     } else {
       S.items.push(Object.assign({ id:uid(), space, kind:'event', slot:firstFreeSlot(space,'event'), done:false, createdAt:Date.now(), gcalId:ev.id }, data));
       added++;
@@ -1238,15 +1297,15 @@ async function syncSpace(space, tMin, tMax){
   // events deleted on Google (inside the synced window) are removed locally
   S.items = S.items.filter(i => {
     if(i.space !== space || !i.gcalId || i.done || seen.has(i.gcalId)) return true;
+    if(i.gdirty || G.pushing.has(i.id) || (i.gpushedAt || 0) >= fetchStart) return true;   // just uploaded / waiting to upload
     const d = itemDate(i);
     if(d && d >= tMin && d <= tMax){ removed++; return false; }
     return true;
   });
   // local events not yet on Google
   if(S.gcal.push){
-    for(const it of S.items.filter(i => i.space === space && i.kind === 'event' && !i.done && !i.gcalId && i.date)){
-      const r = await gapi(`/calendars/${cal}/events`, { method:'POST', body:JSON.stringify(toGoogle(it)) });
-      it.gcalId = r.id; pushed++;
+    for(const it of S.items.filter(i => i.space === space && gPending(i))){
+      try{ if(await uploadEvent(it)) pushed++; }catch(err){ if(!connected()) throw err; }   // other failures: retried next sync
     }
   }
   return { added, updated, removed, pushed };
@@ -1379,7 +1438,7 @@ setInterval(tick, 60e3);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) tick(); });
 if(autoArchive()) save();
 render();
-if(G.token){ setToken(G.token, G.expires); if(S.cloud) cloudSync(); }   // restored session: arm expiry, pull changes
+if(G.token){ setToken(G.token, G.expires); if(S.cloud) cloudSync(); setTimeout(flushGcal, 1500); }   // restored session: arm expiry, pull changes, upload pending
 else promptConnect();
 
 // GitHub Pages lets browsers cache the page for ~10 minutes; check for a newer version and load it once.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-14.3">
+<meta name="app-version" content="2026-10-14.4">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -186,6 +186,13 @@ textarea.input{resize:vertical;min-height:80px;line-height:1.55}
 .pop .pm{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .pop .pm .dd{font-weight:700;color:var(--text)}
 .pop .pm .dd.over{color:var(--danger)}
+.swatches{display:flex;flex-wrap:wrap;gap:8px}
+.swatches button{width:24px;height:24px;border-radius:50%;background:var(--sw);position:relative;flex:none;transition:transform .1s}
+.swatches button:hover{transform:scale(1.12)}
+.swatches button.on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--text)}
+.swatches button.on::after{content:'';position:absolute;left:8px;top:5px;width:6px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.swatches .def{background:conic-gradient(var(--sw) 0 50%, var(--surface-2) 0)}
+.swatches .def::before{content:'';position:absolute;inset:0;border-radius:50%;box-shadow:inset 0 0 0 1px var(--line)}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--accent);color:var(--accent-text);padding:10px 14px 10px 16px;border-radius:10px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:center;opacity:0;pointer-events:none;transition:.2s;z-index:60;font-size:13px;max-width:calc(100vw - 32px)}
 .toast.show{opacity:1;transform:translateX(-50%);pointer-events:auto}
 .toast button{font-weight:700;text-decoration:underline;color:inherit;white-space:nowrap}
@@ -289,6 +296,10 @@ textarea.input{resize:vertical;min-height:80px;line-height:1.55}
         <div class="spacer"></div>
         <button type="button" class="smallbtn" id="clearDate">지우기</button>
       </div>
+    </div>
+    <div class="field" id="colorField">
+      <label>색상 <span class="opt" id="colorName"></span></label>
+      <div class="swatches" id="fColors" role="radiogroup" aria-label="색상"></div>
     </div>
     <div class="modal-foot">
       <button type="button" class="btn danger" id="deleteBtn">삭제</button>
@@ -635,6 +646,8 @@ function eventsByDay(space){
 }
 // Google Calendar event colors (colorId 1-11, as shown in the Google Calendar app)
 const GCOLORS = { 1:'#7986cb', 2:'#33b679', 3:'#8e24aa', 4:'#e67c73', 5:'#f6bf26', 6:'#f4511e', 7:'#039be5', 8:'#616161', 9:'#3f51b5', 10:'#0b8043', 11:'#d50000' };
+const GCOLOR_ORDER = [[11,'토마토'],[4,'플라밍고'],[6,'귤'],[5,'바나나'],[2,'세이지'],[10,'바질'],[7,'공작'],[9,'블루베리'],[1,'라벤더'],[3,'포도'],[8,'흑연']];
+const gcolorId = hex => Object.keys(GCOLORS).find(k => GCOLORS[k] === hex) || null;
 // calendar chips follow Google: the event's own color, else the calendar's color, else the board theme
 function evColor(it){ return it.gcolor || S.gcal.calColor[it.space] || cellColor(it.space, it.kind, it.slot); }
 // waiting to be sent to Google Calendar (new, or edited since the last upload)
@@ -963,9 +976,20 @@ function openEditor({ id, kind, pos, date }){
   $('#fDesc').value = it ? it.desc || '' : '';
   $('#fDate').value = it ? it.date || '' : (date || '');
   $('#fTime').value = it ? it.time || '' : '';
+  $('#colorField').style.display = kind === 'event' && S.space === 'private' ? '' : 'none';
+  pickColor(it ? it.gcolor || '' : '');
   $('#deleteBtn').style.display = it ? '' : 'none';
   openModal('#editOverlay');
   setTimeout(() => $('#fTitle').focus(), 30);
+}
+let pickedColor = '';
+function pickColor(hex){
+  pickedColor = hex;
+  const def = S.gcal.calColor.private || cellColor('private', 'event', 0);
+  const btn = (h, name, cls) => { const b = el('button', { type:'button', class:(cls || '') + (h === hex ? ' on' : ''), title:name, 'aria-label':name, role:'radio', 'aria-checked':String(h === hex) });
+    b.style.setProperty('--sw', h || def); b.addEventListener('click', () => pickColor(h)); return b; };
+  $('#fColors').replaceChildren(btn('', '캘린더 기본', 'def'), ...GCOLOR_ORDER.map(([id, name]) => btn(GCOLORS[id], name)));
+  $('#colorName').textContent = hex ? '· ' + GCOLOR_ORDER.find(([id]) => GCOLORS[id] === hex)[1] : '· 캘린더 기본';
 }
 $('#clearDate').addEventListener('click', () => { $('#fDate').value = ''; $('#fTime').value = ''; });
 $('#fTime').addEventListener('change', () => {
@@ -976,6 +1000,7 @@ $('#editForm').addEventListener('submit', e => {
   const title = $('#fTitle').value.trim(); if(!title) return;
   const date = $('#fDate').value, time = date ? $('#fTime').value : '';
   const data = { title, desc:$('#fDesc').value.trim(), date, time };
+  if(editing.kind === 'event' && S.space === 'private') data.gcolor = pickedColor;
   let it;
   if(editing.id){
     it = S.items.find(i => i.id === editing.id);
@@ -1184,7 +1209,7 @@ async function gfetch(url, opts = {}){
 }
 function toGoogle(it){
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const body = { summary:it.title, description:it.desc || '' };
+  const body = { summary:it.title, description:it.desc || '', colorId: gcolorId(it.gcolor) };
   if(it.time){
     const st = itemDate(it);
     let en = it.endTime ? itemDate({ date:it.endDate || it.date, time:it.endTime }) : null;

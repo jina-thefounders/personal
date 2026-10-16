@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="2026-10-16.1">
+<meta name="app-version" content="2026-10-16.2">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -102,6 +102,13 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);min-h
 .cell.done .check:hover{background:transparent}
 .cell.done .check:hover svg{color:var(--c)}
 .cell.done .desc-dot{background:var(--ink)}
+
+/* ---------- work-tab cleanup list ---------- */
+.clean-group{font-size:12px;font-weight:700;margin:14px 0 6px;color:var(--muted)}
+.clean-item{display:flex;gap:10px;align-items:center;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
+.clean-item .ci-date{color:var(--muted);font-size:12px;margin-left:auto;white-space:nowrap}
+.clean-all{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center;margin-bottom:4px;cursor:pointer}
+#cleanList{max-height:52vh;overflow:auto}
 
 /* ---------- month calendar (private 행사) ---------- */
 .calnav{display:none;align-items:center;gap:4px}
@@ -365,10 +372,14 @@ textarea.input{resize:vertical;min-height:80px;line-height:1.55}
     </details>
     <div class="field">
       <label>캘린더 ID <span class="opt">(기본: primary = 내 기본 캘린더)</span></label>
-      <div class="row" style="margin-bottom:6px"><span class="hint" style="width:64px">업무</span><input class="input" id="gCalWork" placeholder="primary"></div>
+      <div class="row" style="margin-bottom:6px"><span class="hint" style="width:64px">업무</span><input class="input" id="gCalWork" placeholder="연결 안 함 (업무용 캘린더 ID를 넣으면 연결)"></div>
       <div class="row"><span class="hint" style="width:64px">프라이빗</span><input class="input" id="gCalPrivate" placeholder="primary"></div>
     </div>
     <label class="check-inline" style="margin-bottom:8px"><input type="checkbox" id="gPush"> 대시보드에서 만든 행사를 구글 캘린더에도 등록 (양방향)</label>
+    <div class="row" id="cleanRow" style="margin-bottom:8px;display:none">
+      <span class="hint" style="flex:1">업무 탭에 구글 캘린더와 연결된 행사가 <b id="cleanCount"></b>개 있어요.</span>
+      <button type="button" class="smallbtn" id="cleanOpen">정리하기</button>
+    </div>
     <div class="section-title" style="margin-top:6px">📱 다른 기기 연결</div>
     <div class="row" style="margin-bottom:12px">
       <span class="hint" style="flex:1">다른 기기에서 이 링크를 한 번 열면 설정이 적용돼요. 비밀 키가 들어 있으니 다른 사람과 공유하지 마세요.</span>
@@ -379,6 +390,20 @@ textarea.input{resize:vertical;min-height:80px;line-height:1.55}
       <div class="spacer"></div>
       <button class="btn" data-close>닫기</button>
       <button class="btn primary" id="gConnect">연결 후 동기화</button>
+    </div>
+  </div>
+</div>
+
+<!-- work tab cleanup -->
+<div class="overlay" id="cleanOverlay">
+  <div class="modal" style="max-width:520px">
+    <h3>업무 탭의 구글 일정 정리</h3>
+    <div class="sub">업무 탭이 개인 캘린더와 같은 캘린더로 연결돼 있어서 섞여 들어온 일정이에요. 이제 업무 탭은 구글 캘린더와 연결되지 않아요.</div>
+    <div id="cleanList"></div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button class="btn" data-close>취소</button>
+      <button class="btn primary" id="cleanApply">정리</button>
     </div>
   </div>
 </div>
@@ -406,7 +431,7 @@ const defaults = () => ({
   theme:{ work:{c1:'#6a5af9', c2:'#4fc3f7', seed:1}, private:{c1:'#f6d365', c2:'#fda085', seed:1} },
   autoSort:{ work:true, private:true },     // schedules: chronological
   taskSort:{ work:false, private:false },   // tasks: by deadline
-  gcal:{ clientId:'', calendars:{work:'primary', private:'primary'}, push:true, ignored:[], pendingDel:[], calColor:{} },
+  gcal:{ clientId:'', calendars:{work:'', private:'primary'}, push:true, ignored:[], pendingDel:[], calColor:{} },
   cloud:false,          // per-device: save to Google Drive appDataFolder
   settingsAt:0,         // last change of synced settings (theme, sort, size, calendars)
   deleted:{},           // tombstones {id: ts} so deletions propagate across devices
@@ -421,7 +446,10 @@ function load(){
   }catch(e){}
   return defaults();
 }
-function normGcal(){ S.gcal.scriptUrl = S.gcal.scriptUrl || ''; S.gcal.scriptKey = S.gcal.scriptKey || ''; S.gcal.pendingDel = S.gcal.pendingDel || []; S.gcal.calColor = S.gcal.calColor || {}; S.gcal.ignored = S.gcal.ignored || []; }
+function normGcal(){
+  // the work tab used to default to the same personal calendar as the private tab; unlink it once
+  if(!S.gcal.calV2){ if((S.gcal.calendars.work || '') === (S.gcal.calendars.private || 'primary')) S.gcal.calendars.work = ''; S.gcal.calV2 = true; }
+  S.gcal.scriptUrl = S.gcal.scriptUrl || ''; S.gcal.scriptKey = S.gcal.scriptKey || ''; S.gcal.pendingDel = S.gcal.pendingDel || []; S.gcal.calColor = S.gcal.calColor || {}; S.gcal.ignored = S.gcal.ignored || []; }
 normGcal();
 function saveLocal(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 function save(){ stamp(); saveLocal(); scheduleCloud(); }
@@ -624,6 +652,7 @@ function render(){
   $('#archiveCount').textContent = todayN;
   $('#sortToggle').checked = !!S.autoSort[S.space];
   $('#sortToggleWrap').style.display = isActive && !calMode() ? '' : 'none';
+  $('#syncBtn').style.display = calOf(S.space) ? '' : 'none';
   $('#calNav').classList.toggle('on', calMode());
   $('#taskSortToggle').checked = !!S.taskSort[S.space];
   $('#taskSortToggleWrap').style.display = isActive ? '' : 'none';
@@ -667,7 +696,8 @@ const gcolorId = hex => Object.keys(GCOLORS).find(k => GCOLORS[k] === hex) || nu
 // calendar chips follow Google: the event's own color, else the calendar's color, else the board theme
 function evColor(it){ return it.gcolor || S.gcal.calColor[it.space] || cellColor(it.space, it.kind, it.slot); }
 // waiting to be sent to Google Calendar (new, or edited since the last upload)
-const gPending = it => it.kind === 'event' && !it.done && !!it.date && (!it.gcalId || !!it.gdirty);
+const calOf = space => S.gcal.calendars[space] || '';   // '' = this tab isn't linked to Google Calendar
+const gPending = it => it.kind === 'event' && !it.done && !!it.date && !!calOf(it.space) && (!it.gcalId || !!it.gdirty);
 const gTracking = () => S.gcal.push && (scriptMode() || !!S.gcal.clientId);
 function evChip(it){
   const bg = evColor(it);
@@ -828,7 +858,7 @@ function archiveDoneToday(){
 }
 function removeItem(id, ask){
   const it = S.items.find(i => i.id === id); if(!it) return;
-  const alsoGoogle = it.gcalId && S.gcal.push;
+  const alsoGoogle = it.gcalId && S.gcal.push && !!calOf(it.space);
   if(ask && !confirm('"' + it.title + '"을(를) 삭제할까요?' + (alsoGoogle ? '\n(구글 캘린더에서도 삭제됩니다)' : it.gcalId ? '\n(구글 캘린더의 원본 일정은 그대로 남고, 이후 동기화에서 다시 가져오지 않습니다)' : ''))) return false;
   if(it.gcalId && !S.gcal.ignored.includes(it.gcalId)) S.gcal.ignored.push(it.gcalId);
   if(alsoGoogle){ S.gcal.pendingDel.push({ space:it.space, id:it.gcalId }); setTimeout(flushGcal, 0); }
@@ -1187,6 +1217,7 @@ $('#gcalBtn').addEventListener('click', () => {
   $('#gScriptUrl').value = S.gcal.scriptUrl || '';
   $('#gScriptKey').value = S.gcal.scriptKey || '';
   $('#oauthBox').open = !scriptMode() && !!S.gcal.clientId;
+  refreshCleanRow();
   $('#gCalWork').value = S.gcal.calendars.work;
   $('#gCalPrivate').value = S.gcal.calendars.private;
   $('#gPush').checked = S.gcal.push;
@@ -1197,7 +1228,7 @@ function readGcalForm(){
   S.gcal.clientId = $('#gClientId').value.trim();
   const url = $('#gScriptUrl').value.trim(), key = $('#gScriptKey').value.trim();
   if(url !== (S.gcal.scriptUrl || '') || key !== (S.gcal.scriptKey || '')){ S.gcal.scriptUrl = url; S.gcal.scriptKey = key; G.scriptOk = undefined; G.calColorFetched = {}; G.rev = undefined; }
-  S.gcal.calendars.work = $('#gCalWork').value.trim() || 'primary';
+  S.gcal.calendars.work = $('#gCalWork').value.trim();   // empty = work tab not linked to Google
   S.gcal.calendars.private = $('#gCalPrivate').value.trim() || 'primary';
   S.gcal.push = $('#gPush').checked;
   const cloudOn = $('#gCloud').checked && !S.cloud;
@@ -1212,6 +1243,54 @@ $('#gConnect').addEventListener('click', async () => {
     if(scriptMode()) await scriptCall({ op:'rev' }); else await ensureToken(true);
     closeModals(); if(cloudOn()) await cloudSync(); await syncAll(); flushGcal();
   }catch(err){ alert(err.message); }
+});
+/* ---------- cleanup: personal-calendar events that ended up in the work tab ---------- */
+const workLinked = () => S.items.filter(i => i.space === 'work' && i.kind === 'event' && i.gcalId && !calOf('work'));
+function refreshCleanRow(){
+  const n = workLinked().length;
+  $('#cleanRow').style.display = n ? '' : 'none';
+  $('#cleanCount').textContent = n;
+}
+function openCleanup(){
+  const list = workLinked();
+  // pushed from this dashboard (gpushedAt) = made in the work tab; the rest were brought in from Google
+  const pulled = list.filter(i => !i.gpushedAt), pushed = list.filter(i => i.gpushedAt);
+  const row = (it, checked, name) => el('label', { class:'clean-item' },
+    Object.assign(el('input', { type:'checkbox', 'data-id':it.id, 'data-group':name }), { checked }),
+    el('span', null, it.title), el('span', { class:'ci-date' }, it.date ? fmtDeadline(it) : '날짜 없음'));
+  const group = (title, items, checked, name, hint) => {
+    if(!items.length) return [];
+    const all = Object.assign(el('input', { type:'checkbox' }), { checked });
+    all.addEventListener('change', () => $$(`#cleanList input[data-group="${name}"]`).forEach(c => c.checked = all.checked));
+    return [el('div', { class:'clean-group' }, title + ' · ' + items.length + '개'), el('div', { class:'hint', style:'margin-bottom:6px' }, hint),
+      el('label', { class:'clean-all' }, all, '전체 선택'), ...items.map(it => row(it, checked, name))];
+  };
+  $('#cleanList').replaceChildren(
+    ...group('구글 캘린더에서 들어온 일정', pulled, true, 'pulled', '체크한 일정은 업무 탭에서만 빠져요. 구글 캘린더와 프라이빗 탭에는 그대로 있어요.'),
+    ...group('업무 탭에서 만들어 구글에 올라간 일정', pushed, false, 'pushed', '업무 탭에는 그대로 남고 구글과의 연결만 끊겨요. 체크하면 개인 구글 캘린더에서도 삭제해요.'));
+  openModal('#cleanOverlay');
+}
+$('#cleanOpen').addEventListener('click', () => { closeModals(); openCleanup(); });
+$('#cleanApply').addEventListener('click', () => {
+  const picked = g => new Set($$(`#cleanList input[data-group="${g}"]:checked`).map(c => c.dataset.id));
+  const drop = picked('pulled'), delGoogle = picked('pushed');
+  const pushedAll = workLinked().filter(i => i.gpushedAt);
+  if(delGoogle.size && !confirm(delGoogle.size + '개 일정을 개인 구글 캘린더에서도 삭제할까요? (구글에서 삭제한 것은 되돌릴 수 없어요)')) return;
+  const before = JSON.stringify(S.items);
+  // made here and uploaded: keep in the work tab, unlink; optionally delete the Google copy
+  for(const it of pushedAll){
+    if(delGoogle.has(it.id)){
+      S.gcal.pendingDel.push({ space:'private', id:it.gcalId });
+      S.items = S.items.filter(i => !(i.space === 'private' && i.gcalId === it.gcalId));
+    }
+    delete it.gcalId; delete it.gdirty; delete it.gpushedAt;
+  }
+  // brought in from Google: remove from the work tab only (the calendar keeps them)
+  S.items = S.items.filter(i => !drop.has(i.id));
+  save(); closeModals(); render(); refreshCleanRow();
+  if(delGoogle.size) flushGcal();
+  toast('업무 탭을 정리했어요 · ' + drop.size + '개 제거' + (delGoogle.size ? ' · 구글에서 ' + delGoogle.size + '개 삭제' : ''),
+    delGoogle.size ? null : () => { S.items = JSON.parse(before); save(); render(); refreshCleanRow(); });
 });
 $('#gScriptTest').addEventListener('click', async () => {
   readGcalForm();
@@ -1361,6 +1440,7 @@ function syncSpace(space, tMin, tMax){
   return run;
 }
 async function syncSpaceNow(space, tMin, tMax){
+  if(!calOf(space)) return { added:0, updated:0, removed:0, pushed:0 };   // tab not linked to a calendar
   const cal = encodeURIComponent(S.gcal.calendars[space] || 'primary');
   const now = Date.now(), fetchStart = Date.now();
   // deletions made here
@@ -1393,7 +1473,7 @@ async function syncSpaceNow(space, tMin, tMax){
       if(ex.gdirty && S.gcal.push) continue;   // edited here since the last upload: ours wins, pushed below
       if(!ex.done && ['title','desc','date','time','endDate','endTime','gcolor'].some(k => (ex[k] || '') !== data[k])){ Object.assign(ex, data); updated++; }
     } else {
-      S.items.push(Object.assign({ id:uid(), space, kind:'event', slot:firstFreeSlot(space,'event'), done:false, createdAt:Date.now(), gcalId:ev.id }, data));
+      S.items.push(Object.assign({ id:uid(), space, kind:'event', slot:firstFreeSlot(space,'event'), done:false, createdAt:Date.now(), gcalId:ev.id, src:'google' }, data));
       added++;
     }
   }
@@ -1414,6 +1494,7 @@ async function syncSpaceNow(space, tMin, tMax){
   return { added, updated, removed, pushed };
 }
 async function syncAll(){
+  if(!calOf(S.space)){ toast(SPACES[S.space] + ' 탭은 구글 캘린더와 연결되어 있지 않아요 (Google 설정에서 캘린더 ID를 넣으면 연결돼요)'); return; }
   const btn = $('#syncBtn'); btn.disabled = true; btn.textContent = '⟳ 동기화 중…';
   try{
     const r = await syncSpace(S.space);
@@ -1569,6 +1650,7 @@ setInterval(tick, 60e3);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) tick(); });
 if(autoArchive()) save();
 render();
+if(workLinked().length) setTimeout(() => toast('업무 탭에 개인 구글 캘린더 일정 ' + workLinked().length + '개가 섞여 들어왔어요', openCleanup, '정리하기', true), 800);
 if(scriptMode()){ cloudSync().then(() => flushGcal()); }   // sync server: always on, nothing to sign in to
 else if(G.token){ setToken(G.token, G.expires); if(S.cloud) cloudSync(); setTimeout(flushGcal, 1500); }   // restored session: arm expiry, pull changes, upload pending
 else promptConnect();
